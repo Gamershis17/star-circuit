@@ -335,6 +335,17 @@
       goalsClaimed: [],
       lastSeen: num(raw.lastSeen, Date.now(), 0, Date.now() + 60000),
     };
+    // Cosmetics: allowlisted ids only; anything unknown falls back to defaults
+    // (mirrors the server-side allowlist in src/validation.js).
+    s.cosmetics = {
+      colorTheme: B.DEFAULT_COSMETICS.colorTheme,
+      shipStyle: B.DEFAULT_COSMETICS.shipStyle,
+    };
+    var rc = raw.cosmetics;
+    if (rc && typeof rc === 'object' && !Array.isArray(rc)) {
+      if (B.getTheme(rc.colorTheme)) s.cosmetics.colorTheme = rc.colorTheme;
+      if (B.getStyle(rc.shipStyle)) s.cosmetics.shipStyle = rc.shipStyle;
+    }
     if (Array.isArray(raw.ships)) {
       for (var i = 0; i < raw.ships.length && s.ships.length < s.rings * B.RING_CAPACITY; i++) {
         var sh = raw.ships[i];
@@ -356,6 +367,30 @@
       }
     }
     return s;
+  }
+
+  /* ---------------- cosmetics (presentation only, zero gameplay effect) ---------------- */
+
+  // Active cosmetics, always resolved against the allowlists (never trusts raw state).
+  function activeCosmetics() {
+    var c = (state && state.cosmetics) || {};
+    return {
+      colorTheme: B.getTheme(c.colorTheme) ? c.colorTheme : B.DEFAULT_COSMETICS.colorTheme,
+      shipStyle: B.getStyle(c.shipStyle) ? c.shipStyle : B.DEFAULT_COSMETICS.shipStyle,
+    };
+  }
+
+  // The 8 resolved tier colors for a state (pure function; testable).
+  function tierColorsFor(st) {
+    var c = (st && st.cosmetics) || {};
+    var th = B.getTheme(c.colorTheme);
+    if (th && th.colors && th.colors.length >= B.TIERS) return th.colors.slice();
+    return B.TIER_COLORS.slice();
+  }
+
+  // Live tier color used by the canvas render path.
+  function tierColor(tier) {
+    return tierColorsFor(state)[tier] || B.TIER_COLORS[tier];
   }
 
   /* ---------------- public logic API ---------------- */
@@ -389,6 +424,7 @@
     tapBoost: tapBoost,
     toggleX2: toggleX2,
     sanitize: sanitize,
+    tierColorsFor: tierColorsFor,
   };
 
   /* ================================================================
@@ -416,13 +452,13 @@
      'auth-pass', 'auth-error', 'auth-submit', 'guest-btn',
      'hud', 'coins', 'cps', 'cores-line', 'auth-btn',
      'goal-fill', 'goal-text',
-     'panel-game', 'panel-goals', 'panel-board', 'panel-news',
+     'panel-game', 'panel-goals', 'panel-settings', 'panel-news',
      'canvas-wrap', 'orbit',
      'boost-fill', 'boost-label', 'btn-boost',
      'btn-ship', 'btn-ring', 'btn-circuit', 'btn-merge', 'btn-x2', 'btn-warp',
      'cost-ship', 'cost-ring', 'cost-circuit', 'x2-label', 'x2-sub',
      'warp-label', 'warp-sub',
-     'goals-list', 'board-list', 'board-refresh', 'news-list',
+     'goals-list', 'theme-list', 'style-list', 'news-list',
      'modal', 'modal-title', 'modal-body', 'modal-ok', 'modal-cancel',
      'toast'
     ].forEach(function (id) { el[id] = $(id); });
@@ -560,7 +596,7 @@
     el['game-screen'].classList.remove('hidden');
     el['auth-btn'].textContent = guest ? 'Sign in' : 'Log out';
     switchTab('game');
-    refreshGoals(); refreshBoard(true); refreshNews(true);
+    refreshGoals(); refreshSettings(); refreshNews(true);
 
     resize();
     lastT = performance.now();
@@ -614,13 +650,13 @@
   /* ---------------- tabs ---------------- */
 
   function switchTab(name) {
-    ['game', 'goals', 'board', 'news'].forEach(function (t) {
+    ['game', 'goals', 'settings', 'news'].forEach(function (t) {
       el['panel-' + t].classList.toggle('hidden', t !== name);
     });
     document.querySelectorAll('#tabs .tabbtn').forEach(function (b) {
       b.classList.toggle('active', b.getAttribute('data-tab') === name);
     });
-    if (name === 'board') refreshBoard();
+    if (name === 'settings') refreshSettings();
     if (name === 'news') refreshNews();
     if (name === 'goals') refreshGoals();
     if (name === 'game') resize();
@@ -666,31 +702,59 @@
     });
   }
 
-  /* ---------------- leaderboard ---------------- */
+  /* ---------------- settings panel (custom colors + ships) ---------------- */
 
-  var boardLoaded = false;
-  async function refreshBoard(force) {
-    if (boardLoaded && !force) return;
-    boardLoaded = true;
-    el['board-list'].innerHTML = '<div class="board-empty">Loading…</div>';
-    try {
-      var r = await api('/api/leaderboard');
-      var entries = (r.data && r.data.entries) || [];
-      if (!entries.length) {
-        el['board-list'].innerHTML = '<div class="board-empty">No pilots on the board yet. Be the first.</div>';
-        return;
+  function refreshSettings() {
+    if (!state) return;
+    var cos = activeCosmetics();
+    var i, k;
+    var html = '';
+    for (i = 0; i < B.COLOR_THEMES.length; i++) {
+      var th = B.COLOR_THEMES[i];
+      var sel = th.id === cos.colorTheme;
+      html += '<button class="theme-row' + (sel ? ' selected' : '') + '" data-theme="' + th.id + '" type="button">' +
+        '<span class="theme-name">' + escapeHtml(th.name) + '</span>' +
+        '<span class="swatches" aria-hidden="true">';
+      for (k = 0; k < th.colors.length; k++) {
+        html += '<span class="sw" style="background:' + th.colors[k] + '"></span>';
       }
-      var html = '';
-      entries.forEach(function (e, i) {
-        html += '<div class="board-row"><div class="board-rank">' + (i + 1) + '</div>' +
-          '<div class="board-name">' + escapeHtml(e.username) + '</div>' +
-          '<div class="board-stats">' + fmt(e.totalEarned) + ' earned<br>' + (e.warps || 0) + ' warps</div></div>';
-      });
-      el['board-list'].innerHTML = html;
-    } catch (e) {
-      el['board-list'].innerHTML = '<div class="board-empty">Could not load the leaderboard.</div>';
-      boardLoaded = false;
+      html += '</span><span class="sel-mark">' + (sel ? '&#10003;' : '') + '</span></button>';
     }
+    el['theme-list'].innerHTML = html;
+    el['theme-list'].querySelectorAll('.theme-row').forEach(function (b) {
+      b.addEventListener('click', function () { setCosmetics('colorTheme', b.getAttribute('data-theme')); });
+    });
+
+    var sh = '';
+    for (i = 0; i < B.SHIP_STYLES.length; i++) {
+      var st = B.SHIP_STYLES[i];
+      var ssel = st.id === cos.shipStyle;
+      sh += '<button class="style-row' + (ssel ? ' selected' : '') + '" data-style="' + st.id + '" type="button">' +
+        '<span class="style-text"><span class="style-name">' + escapeHtml(st.name) + '</span>' +
+        '<span class="style-desc">' + escapeHtml(st.desc) + '</span></span>' +
+        '<span class="sel-mark">' + (ssel ? '&#10003;' : '') + '</span></button>';
+    }
+    el['style-list'].innerHTML = sh;
+    el['style-list'].querySelectorAll('.style-row').forEach(function (b) {
+      b.addEventListener('click', function () { setCosmetics('shipStyle', b.getAttribute('data-style')); });
+    });
+  }
+
+  function setCosmetics(key, id) {
+    if (!state) return;
+    var ok = key === 'colorTheme' ? B.getTheme(id) : B.getStyle(id);
+    if (!ok) return; // never accept unknown ids
+    if (!state.cosmetics || typeof state.cosmetics !== 'object') {
+      state.cosmetics = {
+        colorTheme: B.DEFAULT_COSMETICS.colorTheme,
+        shipStyle: B.DEFAULT_COSMETICS.shipStyle,
+      };
+    }
+    if (state.cosmetics[key] === id) return; // no-op
+    state.cosmetics[key] = id;
+    buildShipSprites();  // re-prerender with the new look (fast, off the frame path)
+    refreshSettings();   // update selection marks
+    persistSoon();       // sync to server / guest storage
   }
 
   function escapeHtml(s) {
@@ -705,12 +769,12 @@
   async function refreshNews(force) {
     if (newsLoaded && !force) return;
     newsLoaded = true;
-    el['news-list'].innerHTML = '<div class="board-empty">Loading…</div>';
+    el['news-list'].innerHTML = '<div class="empty-note">Loading…</div>';
     try {
       var r = await api('/api/changelog');
       var entries = (r.data && r.data.entries) || [];
       if (!entries.length) {
-        el['news-list'].innerHTML = '<div class="board-empty">No news yet.</div>';
+        el['news-list'].innerHTML = '<div class="empty-note">No news yet.</div>';
         return;
       }
       var html = '';
@@ -722,7 +786,7 @@
       });
       el['news-list'].innerHTML = html;
     } catch (e) {
-      el['news-list'].innerHTML = '<div class="board-empty">Could not load the news.</div>';
+      el['news-list'].innerHTML = '<div class="empty-note">Could not load the news.</div>';
       newsLoaded = false;
     }
   }
@@ -854,6 +918,7 @@
   function buildShipSprites() {
     shipSprites = [];
     var s = shipSize();
+    var style = activeCosmetics().shipStyle;
     for (var t = 0; t < B.TIERS; t++) {
       var half = s * 3;
       var cv = document.createElement('canvas');
@@ -862,7 +927,7 @@
       if (!c) { shipSprites.push(null); continue; }
       c.scale(DPR, DPR);
       c.translate(half, half);
-      var col = B.TIER_COLORS[t];
+      var col = tierColor(t);
       // soft outer glow
       var g = c.createRadialGradient(0, 0, 0, 0, 0, half);
       g.addColorStop(0, hexA(col, 0.5));
@@ -875,7 +940,7 @@
       bg.addColorStop(0, '#ffffff');
       bg.addColorStop(0.38, col);
       bg.addColorStop(1, shade(col, 0.42));
-      drawShipShape(c, t, s, bg);
+      drawShipShape(c, t, s, bg, style);
       // cockpit glint
       c.fillStyle = 'rgba(255,255,255,0.9)';
       c.beginPath(); c.arc(s * 0.28, 0, Math.max(1, s * 0.16), 0, TAU); c.fill();
@@ -892,10 +957,32 @@
 
   function shipSize() { return Math.max(9, Math.min(15, MAXR / 16)); }
 
-  // Distinct canvas-drawn art per tier. Ships point along +x (velocity).
-  // `fill` may be a color string or a CanvasGradient.
-  function drawShipShape(c, tier, s, fill) {
+  // Distinct canvas-drawn art per tier, in three selectable ship styles.
+  // Ships point along +x (velocity). `fill` may be a color string or a CanvasGradient.
+  // style: 'fleet' (original silhouettes), 'darts' (arrowhead family), 'orbs' (sphere family).
+  function drawShipShape(c, tier, s, fill, style) {
     c.fillStyle = fill;
+    if (style === 'darts') drawDart(c, tier, s);
+    else if (style === 'orbs') drawOrb(c, tier, s);
+    else drawFleet(c, tier, s);
+  }
+
+  function rimLight(c) {
+    c.strokeStyle = 'rgba(255,255,255,0.35)';
+    c.lineWidth = 1;
+    c.stroke();
+  }
+
+  function saturnRing(c, s, rx, ry, rot) {
+    c.strokeStyle = 'rgba(255,255,255,0.85)';
+    c.lineWidth = 1.4;
+    c.beginPath();
+    c.ellipse(0, 0, s * (rx || 1.25), s * (ry || 0.45), rot == null ? -0.5 : rot, 0, TAU);
+    c.stroke();
+  }
+
+  // Original 8 silhouettes.
+  function drawFleet(c, tier, s) {
     c.beginPath();
     var i, a;
     if (tier === 0) {           // Spark: triangle
@@ -930,16 +1017,114 @@
     }
     c.closePath();
     c.fill();
-    // crisp rim light
-    c.strokeStyle = 'rgba(255,255,255,0.35)';
-    c.lineWidth = 1;
-    c.stroke();
-    if (tier === 5 || tier === 7) {
-      c.strokeStyle = 'rgba(255,255,255,0.85)';
-      c.lineWidth = 1.4;
+    rimLight(c);
+    if (tier === 5 || tier === 7) saturnRing(c, s);
+  }
+
+  // Arrowhead family — every tier a distinct dart, all pointing +x.
+  function drawDart(c, tier, s) {
+    function poly(pts) {
       c.beginPath();
-      c.ellipse(0, 0, s * 1.25, s * 0.45, -0.5, 0, TAU);
+      for (var i = 0; i < pts.length; i++) {
+        if (i === 0) c.moveTo(pts[i][0] * s, pts[i][1] * s);
+        else c.lineTo(pts[i][0] * s, pts[i][1] * s);
+      }
+      c.closePath();
+      c.fill();
+      rimLight(c);
+    }
+    var i, a, rr, px, py;
+    if (tier === 0) {           // Spark: slim needle
+      poly([[1.4, 0], [-0.6, 0.26], [-0.6, -0.26]]);
+    } else if (tier === 1) {    // Comet: paper-plane chevron
+      poly([[1.5, 0], [-0.15, 0.6], [-0.55, 0], [-0.15, -0.6]]);
+    } else if (tier === 2) {    // Nova: needle with tail fins
+      poly([[1.6, 0], [-0.75, 0.16], [-0.75, -0.16]]);
+      poly([[-0.45, 0.1], [-0.95, 0.62], [-0.66, 0.06]]);
+      poly([[-0.45, -0.1], [-0.95, -0.62], [-0.66, -0.06]]);
+    } else if (tier === 3) {    // Pulsar: swept delta wings
+      poly([[1.35, 0], [-0.9, 0.95], [-0.42, 0], [-0.9, -0.95]]);
+    } else if (tier === 4) {    // Quasar: twin prongs
+      poly([[1.4, 0.44], [-0.55, 0.64], [-0.55, 0.28]]);
+      poly([[1.4, -0.44], [-0.55, -0.64], [-0.55, -0.28]]);
+      poly([[0.95, 0.14], [-0.85, 0.14], [-0.85, -0.14], [0.95, -0.14]]);
+    } else if (tier === 5) {    // Nebula: scimitar blade
+      c.beginPath();
+      c.moveTo(1.35 * s, 0.15 * s);
+      c.quadraticCurveTo(0.3 * s, 0.95 * s, -0.85 * s, 0.8 * s);
+      c.quadraticCurveTo(-0.15 * s, 0.3 * s, 0.95 * s, -0.3 * s);
+      c.closePath();
+      c.fill();
+      rimLight(c);
+    } else if (tier === 6) {    // Supernova: star-dart (nose + 4-point sparkle)
+      poly([[1.45, 0], [-0.3, 0.34], [-0.3, -0.34]]);
+      c.beginPath();
+      for (i = 0; i < 8; i++) {
+        a = i * Math.PI / 4;
+        rr = (i % 2 === 0) ? 0.85 : 0.2;
+        px = (-0.42 + Math.cos(a) * rr) * s;
+        py = Math.sin(a) * rr * s;
+        if (i === 0) c.moveTo(px, py); else c.lineTo(px, py);
+      }
+      c.closePath();
+      c.fill();
+      rimLight(c);
+    } else {                    // Eclipse: void dart + halo
+      poly([[1.3, 0], [-0.7, 0.4], [-0.45, 0], [-0.7, -0.4]]);
+      saturnRing(c, s, 1.35, 0.5, 0);
+    }
+  }
+
+  // Sphere family — every tier a distinct orb.
+  function drawOrb(c, tier, s) {
+    function ball(r) {
+      c.beginPath();
+      c.arc(0, 0, r * s, 0, TAU);
+      c.closePath();
+      c.fill();
+      rimLight(c);
+    }
+    function dot(x, y, r) {
+      c.fillStyle = 'rgba(255,255,255,0.9)';
+      c.beginPath();
+      c.arc(x * s, y * s, r * s, 0, TAU);
+      c.fill();
+    }
+    var i, a;
+    if (tier === 0) {           // Spark: small orb
+      ball(0.55);
+    } else if (tier === 1) {    // Comet: orb with bright core
+      ball(0.68);
+      dot(0.12, 0, 0.24);
+    } else if (tier === 2) {    // Nova: ringed orb
+      ball(0.6);
+      saturnRing(c, s);
+    } else if (tier === 3) {    // Pulsar: double-ring orb
+      ball(0.58);
+      saturnRing(c, s, 1.25, 0.45, -0.5);
+      saturnRing(c, s, 1.5, 0.55, 0.5);
+    } else if (tier === 4) {    // Quasar: orb with satellites
+      ball(0.66);
+      for (i = 0; i < 3; i++) {
+        a = 0.5 + i * TAU / 3;
+        dot(Math.cos(a) * 1.15, Math.sin(a) * 1.15, 0.16);
+      }
+    } else if (tier === 5) {    // Nebula: great ringed orb
+      ball(0.8);
+      saturnRing(c, s, 1.6, 0.5, -0.5);
+    } else if (tier === 6) {    // Supernova: orb with cross flares
+      ball(0.72);
+      c.fillStyle = 'rgba(255,255,255,0.85)';
+      c.fillRect(-1.2 * s, -0.09 * s, 2.4 * s, 0.18 * s);
+      c.fillRect(-0.09 * s, -1.2 * s, 0.18 * s, 2.4 * s);
+    } else {                    // Eclipse: haloed orb
+      ball(0.78);
+      c.strokeStyle = 'rgba(226,232,240,0.8)';
+      c.lineWidth = 1.6;
+      c.beginPath();
+      c.arc(0, 0, 1.18 * s, 0, TAU);
       c.stroke();
+      dot(0, 0, 0.2);
     }
   }
 
@@ -1016,7 +1201,7 @@
     for (var ti = 0; ti < state.ships.length; ti++) {
       var sh = state.ships[ti];
       var p = shipXY(sh);
-      var col = B.TIER_COLORS[sh.tier];
+      var col = tierColor(sh.tier);
       var trailLen = 0.35 + sh.tier * 0.14;
       var tx = CX + p.r * Math.cos(sh.angle - trailLen),
           ty = CY + p.r * Math.sin(sh.angle - trailLen);
@@ -1036,7 +1221,7 @@
     for (var si = 0; si < state.ships.length; si++) {
       var shp = state.ships[si];
       var pos = shipXY(shp);
-      var color = B.TIER_COLORS[shp.tier];
+      var color = tierColor(shp.tier);
       var heading = Math.atan2(Math.cos(shp.angle), -Math.sin(shp.angle));
       var spr = shipSprites[shp.tier];
 
@@ -1074,7 +1259,7 @@
       c.closePath();
       c.fill();
       if (spr) c.drawImage(spr.cv, -spr.half, -spr.half, spr.half * 2, spr.half * 2);
-      else drawShipShape(c, shp.tier, s, color); // fallback if prerender unavailable
+      else drawShipShape(c, shp.tier, s, color, activeCosmetics().shipStyle); // fallback if prerender unavailable
       c.restore();
     }
 
@@ -1174,7 +1359,7 @@
   function mergeFx(ring, angle, newTier) {
     var x = CX + ringRadius(ring) * Math.cos(angle);
     var y = CY + ringRadius(ring) * Math.sin(angle);
-    var col = B.TIER_COLORS[newTier];
+    var col = tierColor(newTier);
     spawnFloat(x, y, B.TIER_NAMES[newTier] + '!', col);
     spawnBurst(x, y, col, 24, 130);
     spawnBurst(x, y, '#ffffff', 8, 70);
@@ -1407,7 +1592,7 @@
         var r = ringRadius(lap.ring);
         spawnFloat(CX + r * 0.7, CY - r * 0.7,
           '+' + fmt(Math.floor(B.lapValue(lap.tier, state.circuitLevel, wm) * m)),
-          B.TIER_COLORS[lap.tier]);
+          tierColor(lap.tier));
       }
       if (floats.length > 40) floats.splice(0, floats.length - 40);
     }
@@ -1435,7 +1620,6 @@
     bindButtons();
     el.orbit.addEventListener('click', onCanvasTap);
     el['auth-btn'].addEventListener('click', handleAuthBtn);
-    el['board-refresh'].addEventListener('click', function () { boardLoaded = false; refreshBoard(); });
     el['modal-ok'].addEventListener('click', function () {
       var cb = modalOkCb;
       hideModal();
@@ -1455,6 +1639,9 @@
     window.__starcircuit = {
       api: SC,
       getState: function () { return state; },
+      setCosmetics: setCosmetics,
+      activeCosmetics: activeCosmetics,
+      drawShipShape: drawShipShape,
     };
   }
 

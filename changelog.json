@@ -2,16 +2,28 @@
  "entries": [
   {
    "date": "2026-09-26",
+   "version": "1.2.0",
+   "notes": [
+    "New Settings tab: customize your fleet without affecting gameplay.",
+    "Custom Colors: 6 ship color themes (Classic, Neon Nights, Sunset, Ocean, Royal, Ghost) with live swatch previews.",
+    "Custom Ships: 3 ship art styles (Fleet, Darts, Orbs) — every tier redrawn per style.",
+    "Leaderboard removed from the game screen.",
+    "Your color and ship choices are saved with your account (and for guests, on the device).",
+    "Same game underneath — no balance or gameplay changes."
+   ]
+  },
+  {
+   "date": "2026-09-26",
    "version": "1.1.0",
    "notes": [
     "Visual overhaul: glowing gradient ships with flickering engine flames and fading trails.",
     "Animated starfield with twinkling stars, nebula clouds and a pulsing core.",
-    "Orbit rings are brighter with a distinct color per ring \u2014 easy to see and tap.",
+    "Orbit rings are brighter with a distinct color per ring — easy to see and tap.",
     "New big TAP TO BOOST button: tap it, or tap anywhere on the stars, for 2x speed.",
     "Tap ripples show exactly where your boost taps land.",
     "Merge celebrations: spark bursts, shockwaves and floating tier names.",
     "Fresher UI: glassy panels, gradient titles, animated buttons, goal cards and tabs.",
-    "Same game underneath \u2014 no balance or gameplay changes."
+    "Same game underneath — no balance or gameplay changes."
    ]
   },
   {
@@ -20,7 +32,7 @@
     "Launch! Ships orbit the circuit and earn coins every lap.",
     "Merge pairs of ships into 8 tiers, from Spark to Eclipse.",
     "Buy ships, unlock up to 4 orbit rings, upgrade the circuit.",
-    "Tap for Speed Boost and the x2 Speed toggle \u2014 cooldown-based, no ads. Ever.",
+    "Tap for Speed Boost and the x2 Speed toggle — cooldown-based, no ads. Ever.",
     "10-goal chains with coin and warp-core rewards.",
     "Offline earnings (8h cap) with a Welcome back popup.",
     "Warp Reset prestige: +25% coins per warp core, forever.",
@@ -30,5 +42,5 @@
   }
  ],
  "game": "star-circuit",
- "version": "1.1.0"
+ "version": "1.2.0"
 }

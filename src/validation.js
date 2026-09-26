@@ -82,6 +82,25 @@ function validateStateShape(s) {
   }
   if (!isFiniteNumber(s.lastSeen) || s.lastSeen < 0)
     return 'Bad lastSeen.';
+  // Cosmetics (optional for backwards compatibility with older clients):
+  // two short ids from the known presentation sets. Purely visual — no
+  // gameplay effect, so anything on the allowlist is always acceptable.
+  if (s.cosmetics !== undefined && s.cosmetics !== null) {
+    const c = s.cosmetics;
+    if (!c || typeof c !== 'object' || Array.isArray(c)) return 'Bad cosmetics.';
+    if (
+      typeof c.colorTheme !== 'string' ||
+      c.colorTheme.length > 32 ||
+      !Balance.getTheme(c.colorTheme)
+    )
+      return 'Bad cosmetics colorTheme.';
+    if (
+      typeof c.shipStyle !== 'string' ||
+      c.shipStyle.length > 32 ||
+      !Balance.getStyle(c.shipStyle)
+    )
+      return 'Bad cosmetics shipStyle.';
+  }
   return null;
 }
 

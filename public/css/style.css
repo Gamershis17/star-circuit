@@ -260,9 +260,9 @@ button:focus-visible, input:focus-visible {
   from { opacity: 0; transform: translateY(10px); }
   to { opacity: 1; transform: none; }
 }
-#panel-goals, #panel-board, #panel-news { overflow-y: auto; padding: 14px; -webkit-overflow-scrolling: touch; }
-#panel-goals::-webkit-scrollbar, #panel-board::-webkit-scrollbar, #panel-news::-webkit-scrollbar { width: 8px; }
-#panel-goals::-webkit-scrollbar-thumb, #panel-board::-webkit-scrollbar-thumb, #panel-news::-webkit-scrollbar-thumb {
+#panel-goals, #panel-settings, #panel-news { overflow-y: auto; padding: 14px; -webkit-overflow-scrolling: touch; }
+#panel-goals::-webkit-scrollbar, #panel-settings::-webkit-scrollbar, #panel-news::-webkit-scrollbar { width: 8px; }
+#panel-goals::-webkit-scrollbar-thumb, #panel-settings::-webkit-scrollbar-thumb, #panel-news::-webkit-scrollbar-thumb {
   background: var(--line-bright); border-radius: 4px;
 }
 
@@ -423,31 +423,47 @@ button:focus-visible, input:focus-visible {
 .goal-done { font-size: 12px; color: var(--good); font-weight: 800; letter-spacing: 0.6px; }
 .goal-locked { font-size: 12px; color: var(--faint); font-weight: 600; }
 
-/* ============ BOARD ============ */
+/* ============ SETTINGS ============ */
 
-.board-row {
+.settings-head {
+  margin: 16px 0 10px;
+  font-size: 12px; font-weight: 800; letter-spacing: 1.6px; text-transform: uppercase;
+  color: var(--dim);
+}
+.settings-head:first-of-type { margin-top: 0; }
+
+.theme-row, .style-row {
+  width: 100%;
   display: flex; align-items: center; gap: 12px;
+  min-height: 58px;
+  padding: 10px 14px; margin-bottom: 8px;
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.025), transparent), var(--card);
   border: 1px solid var(--line);
-  border-radius: 12px; padding: 11px 13px; margin-bottom: 7px;
-  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.3);
+  border-radius: var(--radius);
+  color: var(--text); text-align: left;
+  box-shadow: 0 3px 12px rgba(0, 0, 0, 0.3);
+  transition: transform 0.08s, border-color 0.15s, box-shadow 0.15s;
   animation: rowIn 0.3s ease backwards;
 }
-.board-row:nth-child(2) { animation-delay: 0.04s; }
-.board-row:nth-child(3) { animation-delay: 0.08s; }
-.board-rank {
-  flex: 0 0 36px; height: 36px; border-radius: 10px;
-  display: flex; align-items: center; justify-content: center;
-  background: var(--bg2); border: 1px solid var(--line);
-  font-weight: 800; color: var(--dim); font-size: 15px;
+.theme-row:active, .style-row:active { transform: scale(0.98); }
+.theme-row.selected, .style-row.selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 16px rgba(125, 211, 252, 0.22), 0 3px 12px rgba(0, 0, 0, 0.3);
 }
-.board-row:nth-child(1) { border-color: rgba(251, 191, 36, 0.45); }
-.board-row:nth-child(1) .board-rank { color: #0a0f1e; background: var(--grad-gold); border-color: var(--gold); box-shadow: 0 0 14px rgba(251, 191, 36, 0.4); }
-.board-row:nth-child(2) .board-rank { color: #0a0f1e; background: linear-gradient(135deg, #f1f5f9, #94a3b8); border-color: #cbd5e1; }
-.board-row:nth-child(3) .board-rank { color: #0a0f1e; background: linear-gradient(135deg, #fdba74, #b45309); border-color: #d08a4e; }
-.board-name { flex: 1; font-weight: 700; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.board-stats { font-size: 12px; color: var(--dim); text-align: right; font-variant-numeric: tabular-nums; line-height: 1.5; }
-.board-empty { color: var(--faint); text-align: center; padding: 28px 16px; font-size: 14px; line-height: 1.6; }
+.theme-name, .style-name { font-size: 15px; font-weight: 700; white-space: nowrap; }
+.style-desc { display: block; font-size: 12px; color: var(--dim); font-weight: 400; margin-top: 2px; }
+.style-text { flex: 1; min-width: 0; }
+.style-name { display: block; font-size: 15px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.swatches { flex: 1; display: flex; gap: 5px; justify-content: flex-end; min-width: 0; }
+.sw {
+  width: 18px; height: 18px; border-radius: 50%; flex: 0 0 auto;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  box-shadow: 0 0 8px rgba(0, 0, 0, 0.5), inset 0 1px 2px rgba(255, 255, 255, 0.35);
+}
+.sel-mark { flex: 0 0 22px; color: var(--accent); font-size: 18px; font-weight: 800; text-align: center; }
+
+/* generic empty-state note (news panel) */
+.empty-note { color: var(--faint); text-align: center; padding: 28px 16px; font-size: 14px; line-height: 1.6; }
 
 /* ============ NEWS ============ */
 

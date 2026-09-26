@@ -23,6 +23,47 @@
     '#e2e8f0', // Eclipse - white/silver
   ];
 
+  // ---- COSMETICS (presentation only — zero gameplay effect) ----
+  // The theme/style *ids* below are the server-side allowlist for the
+  // `cosmetics` field in saves (see src/validation.js). Colors live here so
+  // both client and server agree on the valid sets.
+  var COLOR_THEMES = [
+    { id: 'classic', name: 'Classic',
+      colors: ['#7dd3fc', '#34d399', '#fbbf24', '#fb7185', '#c084fc', '#f472b6', '#fb923c', '#e2e8f0'] },
+    { id: 'neon', name: 'Neon Nights',
+      colors: ['#22d3ee', '#a3e635', '#facc15', '#f472b6', '#e879f9', '#fb7185', '#fb923c', '#f8fafc'] },
+    { id: 'sunset', name: 'Sunset',
+      colors: ['#fda4af', '#fdba74', '#fde047', '#fb923c', '#f43f5e', '#e879f9', '#a855f7', '#fef3c7'] },
+    { id: 'ocean', name: 'Ocean',
+      colors: ['#a5f3fc', '#67e8f9', '#22d3ee', '#0ea5e9', '#38bdf8', '#6366f1', '#3b82f6', '#ecfeff'] },
+    { id: 'royal', name: 'Royal',
+      colors: ['#c4b5fd', '#a78bfa', '#8b5cf6', '#d8b4fe', '#e879f9', '#f0abfc', '#7c3aed', '#faf5ff'] },
+    { id: 'ghost', name: 'Ghost',
+      colors: ['#f8fafc', '#e2e8f0', '#cbd5e1', '#a5b4fc', '#7dd3fc', '#f0abfc', '#94a3b8', '#ffffff'] },
+  ];
+
+  var SHIP_STYLES = [
+    { id: 'fleet', name: 'Fleet', desc: 'The original 8 ship silhouettes' },
+    { id: 'darts', name: 'Darts', desc: 'Sleek arrowheads, tiered by wingspan' },
+    { id: 'orbs',  name: 'Orbs',  desc: 'Glowing spheres, tiered by rings' },
+  ];
+
+  function getTheme(id) {
+    for (var i = 0; i < COLOR_THEMES.length; i++) {
+      if (COLOR_THEMES[i].id === id) return COLOR_THEMES[i];
+    }
+    return null;
+  }
+
+  function getStyle(id) {
+    for (var i = 0; i < SHIP_STYLES.length; i++) {
+      if (SHIP_STYLES[i].id === id) return SHIP_STYLES[i];
+    }
+    return null;
+  }
+
+  var DEFAULT_COSMETICS = { colorTheme: 'classic', shipStyle: 'fleet' };
+
   function tierMult(tier) {
     return Math.pow(TIER_MULT, tier);
   }
@@ -135,6 +176,7 @@
       earnedAtLastWarp: 0,
       goalsClaimed: [],
       lastSeen: Date.now(),
+      cosmetics: { colorTheme: DEFAULT_COSMETICS.colorTheme, shipStyle: DEFAULT_COSMETICS.shipStyle },
     };
   }
 
@@ -145,6 +187,11 @@
     SHIP_COST_GROWTH: SHIP_COST_GROWTH,
     TIER_NAMES: TIER_NAMES,
     TIER_COLORS: TIER_COLORS,
+    COLOR_THEMES: COLOR_THEMES,
+    SHIP_STYLES: SHIP_STYLES,
+    DEFAULT_COSMETICS: DEFAULT_COSMETICS,
+    getTheme: getTheme,
+    getStyle: getStyle,
     tierMult: tierMult,
     lapValue: lapValue,
     lapTime: lapTime,
