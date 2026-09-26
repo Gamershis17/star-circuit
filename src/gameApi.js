@@ -67,6 +67,65 @@ router.get(
   })
 );
 
+// In-flight claim locks (single process): closes the double-POST race where
+// two concurrent claims could both read lastDailyClaim != today.
+const dailyClaimLocks = new Set();
+
+// Daily login reward (server-authoritative, UTC calendar days).
+// 7-day cycle: day N pays 1000*N coins, day 7 also grants a warp core.
+// Missing a calendar day resets the streak to 1.
+router.post(
+  '/daily/claim',
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    if (dailyClaimLocks.has(req.user.id)) {
+      return res.status(409).json({ error: 'Claim already in progress.' });
+    }
+    dailyClaimLocks.add(req.user.id);
+    try {
+      const now = Date.now();
+      const row = await getSave(req.user.id);
+      const state =
+        row && row.state && typeof row.state === 'object'
+          ? row.state
+          : Balance.freshState();
+      const info = Balance.dailyClaimInfo(
+        state.lastDailyClaim,
+        state.dailyStreak,
+        now
+      );
+      if (!info.claimable) {
+        return res.status(409).json({
+          error: 'Daily reward already claimed — come back tomorrow.',
+          nextClaimIn: info.nextClaimInSec,
+        });
+      }
+      const rw = Balance.dailyReward(info.day);
+      state.coins = (Number(state.coins) || 0) + rw.coins;
+      state.totalEarned = (Number(state.totalEarned) || 0) + rw.coins;
+      if (rw.cores) state.warpCores = (Number(state.warpCores) || 0) + rw.cores;
+      state.lastDailyClaim = info.date;
+      state.dailyStreak = info.streak;
+      await upsertSave(
+        req.user.id,
+        state,
+        Number(state.totalEarned) || 0,
+        Number(state.warps) || 0
+      );
+      res.json({
+        ok: true,
+        streak: info.streak,
+        day: info.day,
+        reward: { coins: rw.coins, cores: rw.cores },
+        date: info.date,
+        nextClaimIn: Balance.secsUntilUtcMidnight(Date.now()),
+      });
+    } finally {
+      dailyClaimLocks.delete(req.user.id);
+    }
+  })
+);
+
 let changelogCache = null;
 router.get('/changelog', (req, res) => {
   if (!changelogCache) {

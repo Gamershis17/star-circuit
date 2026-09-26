@@ -116,6 +116,60 @@
   var OFFLINE_CAP_S = 8 * 3600;
   var OFFLINE_EFF = 0.5;
 
+  // ---- DAILY LOGIN REWARDS (server-authoritative) ----
+  // 7-day cycle on UTC calendar days. Day N pays 1000*N coins; day 7 also
+  // grants a warp core. Missing a calendar day resets the streak to 1.
+  // The pure day-math lives here so client and server agree exactly.
+  var DAILY_CYCLE = 7;
+  function dailyReward(day) {
+    var d = Math.max(1, Math.min(DAILY_CYCLE, (day | 0) || 1));
+    return { coins: 1000 * d, cores: d === DAILY_CYCLE ? 1 : 0 };
+  }
+  function pad2(n) { return (n < 10 ? '0' : '') + n; }
+  // 'YYYY-MM-DD' for a timestamp, on the UTC calendar.
+  function utcDayString(ms) {
+    var d = new Date(ms);
+    return d.getUTCFullYear() + '-' + pad2(d.getUTCMonth() + 1) + '-' + pad2(d.getUTCDate());
+  }
+  // Shift a 'YYYY-MM-DD' string by n calendar days (UTC).
+  function shiftDayString(dayStr, n) {
+    var p = String(dayStr).split('-');
+    var t = Date.UTC(+p[0], +p[1] - 1, +p[2]) + n * 86400000;
+    return utcDayString(t);
+  }
+  // Strict real-calendar-date check for 'YYYY-MM-DD'.
+  function isValidDayString(s) {
+    if (typeof s !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
+    var p = s.split('-'), y = +p[0], m = +p[1], d = +p[2];
+    if (m < 1 || m > 12 || d < 1 || d > 31) return false;
+    var t = new Date(Date.UTC(y, m - 1, d));
+    return t.getUTCFullYear() === y && t.getUTCMonth() === m - 1 && t.getUTCDate() === d;
+  }
+  // Seconds from nowMs until the next UTC midnight (>= 1).
+  function secsUntilUtcMidnight(nowMs) {
+    var d = new Date(nowMs);
+    var next = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + 1);
+    return Math.max(1, Math.ceil((next - nowMs) / 1000));
+  }
+  // One shared claim calculation for client preview and server enforcement.
+  // Returns { claimable, streak, day, reward, nextClaimInSec, date }.
+  // - claimable: a reward can be claimed right now (streak/day describe it).
+  // - not claimable: already claimed today (streak/day describe what was claimed).
+  function dailyClaimInfo(lastDailyClaim, dailyStreak, nowMs) {
+    var today = utcDayString(nowMs);
+    var last = isValidDayString(lastDailyClaim) ? lastDailyClaim : null;
+    var prev = Math.max(0, Math.floor(Number(dailyStreak) || 0));
+    if (last === today) {
+      var doneDay = prev > 0 ? ((prev - 1) % DAILY_CYCLE) + 1 : 1;
+      return { claimable: false, streak: prev, day: doneDay, reward: null,
+               nextClaimInSec: secsUntilUtcMidnight(nowMs), date: today };
+    }
+    var streak = (last && last === shiftDayString(today, -1)) ? prev + 1 : 1;
+    var day = ((streak - 1) % DAILY_CYCLE) + 1;
+    return { claimable: true, streak: streak, day: day, reward: dailyReward(day),
+             nextClaimInSec: 0, date: today };
+  }
+
   // 10-goal chain. check(state) -> true when the goal is complete.
   // reward: { coins } or { cores }.
   var GOALS = [
@@ -176,6 +230,8 @@
       earnedAtLastWarp: 0,
       goalsClaimed: [],
       lastSeen: Date.now(),
+      lastDailyClaim: null, // 'YYYY-MM-DD' (UTC) of last daily reward claim
+      dailyStreak: 0,       // consecutive calendar days claimed
       cosmetics: { colorTheme: DEFAULT_COSMETICS.colorTheme, shipStyle: DEFAULT_COSMETICS.shipStyle },
     };
   }
@@ -211,6 +267,13 @@
     X2_MULT: X2_MULT,
     OFFLINE_CAP_S: OFFLINE_CAP_S,
     OFFLINE_EFF: OFFLINE_EFF,
+    DAILY_CYCLE: DAILY_CYCLE,
+    dailyReward: dailyReward,
+    utcDayString: utcDayString,
+    shiftDayString: shiftDayString,
+    isValidDayString: isValidDayString,
+    secsUntilUtcMidnight: secsUntilUtcMidnight,
+    dailyClaimInfo: dailyClaimInfo,
     GOALS: GOALS,
     maxTier: maxTier,
     coinsPerSecond: coinsPerSecond,

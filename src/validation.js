@@ -82,6 +82,17 @@ function validateStateShape(s) {
   }
   if (!isFiniteNumber(s.lastSeen) || s.lastSeen < 0)
     return 'Bad lastSeen.';
+  // Daily login rewards (optional for backwards compatibility with older saves).
+  // lastDailyClaim is a strict UTC calendar date string; dailyStreak a counter.
+  // Both are set server-side by POST /api/daily/claim, so the shape check is
+  // all the anti-cheat needs here.
+  if (s.lastDailyClaim !== undefined && s.lastDailyClaim !== null) {
+    if (!Balance.isValidDayString(s.lastDailyClaim)) return 'Bad lastDailyClaim.';
+  }
+  if (s.dailyStreak !== undefined && s.dailyStreak !== null) {
+    if (!Number.isInteger(s.dailyStreak) || s.dailyStreak < 0 || s.dailyStreak > 1e6)
+      return 'Bad dailyStreak.';
+  }
   // Cosmetics (optional for backwards compatibility with older clients):
   // two short ids from the known presentation sets. Purely visual — no
   // gameplay effect, so anything on the allowlist is always acceptable.

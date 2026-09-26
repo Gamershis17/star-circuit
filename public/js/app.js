@@ -226,6 +226,44 @@
     return null;
   }
 
+  /* ---------------- daily login rewards ---------------- */
+
+  // Snapshot of the daily-reward state for a save (UTC calendar days).
+  // Thin wrapper over the shared B.dailyClaimInfo so client and server agree.
+  function dailyStatus(st, nowMs) {
+    return B.dailyClaimInfo(
+      st && st.lastDailyClaim,
+      st && st.dailyStreak,
+      nowMs == null ? Date.now() : nowMs
+    );
+  }
+
+  // Apply a daily claim to a state (guest path, and client mirror of a
+  // successful server claim). Mutates st. Returns { coins, cores }.
+  function applyDailyClaim(st, streak, day, todayStr) {
+    var rw = B.dailyReward(day);
+    st.coins = (st.coins || 0) + rw.coins;
+    st.totalEarned = (st.totalEarned || 0) + rw.coins;
+    if (rw.cores) st.warpCores = (st.warpCores || 0) + rw.cores;
+    st.lastDailyClaim = todayStr;
+    st.dailyStreak = streak;
+    return { coins: rw.coins, cores: rw.cores };
+  }
+
+  // HH:MM:SS for the countdown timer.
+  function fmtClock(sec) {
+    sec = Math.max(0, Math.floor(sec));
+    var h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
+    function p(n) { return (n < 10 ? '0' : '') + n; }
+    return p(h) + ':' + p(m) + ':' + p(s);
+  }
+
+  function dailyRewardText(rw) {
+    var t = '+' + fmt(rw.coins) + ' coins';
+    if (rw.cores) t += ' · +' + rw.cores + ' warp core';
+    return t;
+  }
+
   /* ---------------- warp (prestige) ---------------- */
 
   function runEarned(state) {
@@ -334,6 +372,9 @@
       shipsBought: Math.floor(num(raw.shipsBought, 2, 2, 1e6)),
       goalsClaimed: [],
       lastSeen: num(raw.lastSeen, Date.now(), 0, Date.now() + 60000),
+      // Daily login rewards: strict date string or null; streak counter.
+      lastDailyClaim: B.isValidDayString(raw.lastDailyClaim) ? raw.lastDailyClaim : null,
+      dailyStreak: Math.floor(num(raw.dailyStreak, 0, 0, 1e6)),
     };
     // Cosmetics: allowlisted ids only; anything unknown falls back to defaults
     // (mirrors the server-side allowlist in src/validation.js).
@@ -425,6 +466,10 @@
     toggleX2: toggleX2,
     sanitize: sanitize,
     tierColorsFor: tierColorsFor,
+    dailyStatus: dailyStatus,
+    applyDailyClaim: applyDailyClaim,
+    fmtClock: fmtClock,
+    dailyRewardText: dailyRewardText,
   };
 
   /* ================================================================
@@ -442,7 +487,7 @@
   var selected = -1;    // selected ship index for merging
   var floats = [];      // floating "+N" texts {x,y,ttl,text,color}
   var stars = null;     // prerendered starfield canvas
-  var rafId = 0, lastT = 0, lastSave = 0, lastHud = 0;
+  var rafId = 0, lastT = 0, lastSave = 0, lastHud = 0, lastDailyUi = 0;
   var toastTimer = 0;
 
   function $(id) { return document.getElementById(id); }
@@ -459,6 +504,7 @@
      'cost-ship', 'cost-ring', 'cost-circuit', 'x2-label', 'x2-sub',
      'warp-label', 'warp-sub',
      'goals-list', 'theme-list', 'style-list', 'news-list',
+     'daily-card',
      'modal', 'modal-title', 'modal-body', 'modal-ok', 'modal-cancel',
      'toast'
     ].forEach(function (id) { el[id] = $(id); });
@@ -587,8 +633,11 @@
         'Welcome back' + (guest ? '' : ', ' + user.username) + '!',
         'While you were away (' + fmtDur(off.elapsedS) + ' at 50% efficiency):<br>' +
         '<span class="big">+' + fmt(Math.floor(off.amount)) + '</span> coins',
-        'Collect', null, null
+        'Collect', null,
+        function () { showDailyModal(); } // daily popup follows the welcome-back one
       );
+    } else {
+      showDailyModal();
     }
     persist();
 
@@ -628,7 +677,7 @@
     state.lastSeen = Date.now();
     if (isGuest) { persistGuest(); return; }
     var payload = JSON.stringify({ state: state });
-    api('/api/save', { method: 'POST', body: state }).then(function (r) {
+    api('/api/save', { method: 'POST', body: { state: state } }).then(function (r) {
       if (r.status === 422) {
         showToast('Server rejected this save (anti-cheat) — your local game is safe, keep playing.');
       } else if (r.status === 401) {
@@ -673,6 +722,7 @@
 
   function refreshGoals() {
     if (!state) return;
+    refreshDaily();
     var html = '';
     for (var i = 0; i < B.GOALS.length; i++) {
       var st = goalStatus(state, i);
@@ -700,6 +750,95 @@
         }
       });
     });
+  }
+
+  /* ---------------- daily reward card (top of Goals tab) ---------------- */
+
+  function refreshDaily() {
+    if (!state || !el['daily-card']) return;
+    var info = dailyStatus(state, Date.now());
+    var dots = '';
+    for (var d = 1; d <= B.DAILY_CYCLE; d++) {
+      var cls = 'ddot';
+      if (d < info.day) cls += ' done';
+      else if (d === info.day) cls += info.claimable ? ' today' : ' done';
+      dots += '<span class="' + cls + '">' + d + '</span>';
+    }
+    var streakLine;
+    if (info.claimable) {
+      streakLine = info.streak >= 2
+        ? '🔥 Claim now for a <b>' + info.streak + '-day streak</b>!'
+        : 'Come back every day to build a streak.';
+    } else {
+      streakLine = '🔥 <b>' + info.streak + '-day streak</b>' + (info.streak === 1 ? '' : 's');
+    }
+    var html = '<div class="daily-head"><span class="daily-title">🎁 DAILY REWARD</span>' +
+      '<span class="daily-day">Day ' + info.day + ' of ' + B.DAILY_CYCLE + '</span></div>' +
+      '<div class="daily-dots" aria-hidden="true">' + dots + '</div>' +
+      '<div class="daily-streakline">' + streakLine + '</div>';
+    if (info.claimable) {
+      html += '<div class="daily-reward">Today: <b>' + dailyRewardText(info.reward) + '</b></div>' +
+        '<button id="daily-claim" class="daily-btn" type="button">CLAIM</button>';
+    } else {
+      html += '<div class="daily-reward dim">Day ' + info.day + ' claimed ✓</div>' +
+        '<div class="daily-count">Next reward in <span id="daily-count">' +
+        fmtClock(info.nextClaimInSec) + '</span></div>';
+    }
+    el['daily-card'].innerHTML = html;
+    var btn = $('daily-claim');
+    if (btn) btn.addEventListener('click', claimDaily);
+  }
+
+  function claimDaily() {
+    if (!state) return;
+    var info = dailyStatus(state, Date.now());
+    if (!info.claimable) {
+      showToast('Already claimed — next reward in ' + fmtClock(info.nextClaimInSec) + '.');
+      return;
+    }
+    if (isGuest) {
+      // Guest: same rules, local only.
+      var rw = applyDailyClaim(state, info.streak, info.day, info.date);
+      persistGuest();
+      showToast('Daily reward: ' + dailyRewardText(rw));
+      refreshDaily();
+      return;
+    }
+    var btn = $('daily-claim');
+    if (btn) btn.disabled = true;
+    api('/api/daily/claim', { method: 'POST' }).then(function (r) {
+      if (r.status === 200 && r.data && r.data.ok) {
+        // Mirror the server-authoritative result locally BEFORE the next
+        // autosave, so the anti-cheat never sees earnings go backwards.
+        applyDailyClaim(state, r.data.streak, r.data.day, r.data.date);
+        var got = r.data.reward || { coins: 0, cores: 0 };
+        showToast('Daily reward: ' + dailyRewardText(got));
+        updateHUD();
+        persistSoon();
+      } else if (r.status === 409) {
+        showToast('Already claimed — come back tomorrow.');
+      } else if (r.status === 401) {
+        showToast('Session expired — log in again to claim.');
+      } else {
+        showToast((r.data && r.data.error) || 'Could not claim the daily reward.');
+      }
+      refreshDaily();
+    }).catch(function () {
+      showToast('Could not reach the server — try again.');
+      refreshDaily();
+    });
+  }
+
+  function showDailyModal() {
+    var di = dailyStatus(state, Date.now());
+    if (!di.claimable) return;
+    showModal(
+      '🎁 Daily Reward — Day ' + di.day,
+      (di.streak >= 2 ? '🔥 <b>' + di.streak + '-day streak!</b><br>' : '') +
+      'Today\'s reward:<br><span class="big">' + dailyRewardText(di.reward) + '</span>',
+      'CLAIM', 'Later',
+      function () { claimDaily(); }
+    );
   }
 
   /* ---------------- settings panel (custom colors + ships) ---------------- */
@@ -1569,6 +1708,18 @@
       el['boost-label'].textContent = 'Speed boost: ' + Math.ceil(rt.boostLeft) + 's left' +
         (rt.x2Left > 0 ? ' · x2 stacking (x4 total)' : '');
     }
+
+    // daily reward countdown (1s gate; re-renders the card at midnight rollover)
+    var nowMs = Date.now();
+    if (nowMs - lastDailyUi > 1000) {
+      lastDailyUi = nowMs;
+      var dc = el['daily-card'] && $('daily-count');
+      if (dc) {
+        var di = dailyStatus(state, nowMs);
+        if (di.claimable) refreshDaily();
+        else dc.textContent = fmtClock(di.nextClaimInSec);
+      }
+    }
   }
 
   /* ---------------- main loop ---------------- */
@@ -1642,6 +1793,7 @@
       setCosmetics: setCosmetics,
       activeCosmetics: activeCosmetics,
       drawShipShape: drawShipShape,
+      claimDaily: claimDaily,
     };
   }
 

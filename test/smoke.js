@@ -20,6 +20,13 @@ const vm = require('vm');
 
 const PUB = path.join(__dirname, '..', 'public');
 let failures = 0;
+// JS errors thrown by app code inside the stub browser (event listeners,
+// DOMContentLoaded handlers, rAF frames). _fire/frames record instead of
+// throwing so one bad handler can't mask the rest; the run fails at the end.
+const jsErrors = [];
+function calls(label, fn) {
+  try { fn(); } catch (e) { jsErrors.push(label + ': ' + ((e && e.stack) || e)); }
+}
 function check(name, cond) {
   if (!cond) { failures++; console.error('FAIL:', name); }
   else console.log('ok:', name);
@@ -127,6 +134,108 @@ const B = SC.balance;
     problem === null && rt.cosmetics.colorTheme === 'royal');
 })();
 
+/* ---------------- 2b. daily rewards: logic + validator + sanitize ---------------- */
+(function dailyUnit() {
+  // reward table
+  check('daily day 1 pays 1000', B.dailyReward(1).coins === 1000 && B.dailyReward(1).cores === 0);
+  check('daily day 6 pays 6000', B.dailyReward(6).coins === 6000);
+  check('daily day 7 pays 7000 + 1 core',
+    B.dailyReward(7).coins === 7000 && B.dailyReward(7).cores === 1);
+  check('dailyReward clamps out-of-range days',
+    B.dailyReward(0).coins === 1000 && B.dailyReward(99).coins === 7000);
+
+  // UTC day helpers
+  var t0 = Date.UTC(2026, 8, 26, 12, 0, 0); // 2026-09-26 12:00 UTC
+  check('utcDayString', B.utcDayString(t0) === '2026-09-26');
+  check('utcDayString at midnight edge', B.utcDayString(Date.UTC(2026, 8, 27, 0, 0, 1)) === '2026-09-27');
+  check('shiftDayString -1', B.shiftDayString('2026-09-26', -1) === '2026-09-25');
+  check('shiftDayString crosses month boundary',
+    B.shiftDayString('2026-10-01', -1) === '2026-09-30');
+  check('shiftDayString crosses year boundary',
+    B.shiftDayString('2026-01-01', -1) === '2025-12-31');
+  check('isValidDayString accepts real dates', B.isValidDayString('2026-09-26') === true);
+  check('isValidDayString rejects garbage',
+    !B.isValidDayString('not-a-date') && !B.isValidDayString('2026-13-45') &&
+    !B.isValidDayString('2026-02-30') && !B.isValidDayString('2026-9-6') &&
+    !B.isValidDayString(null) && !B.isValidDayString(''));
+  var secs = B.secsUntilUtcMidnight(t0);
+  check('secsUntilUtcMidnight ~12h at noon UTC', secs > 11 * 3600 && secs <= 12 * 3600 + 1);
+  check('secsUntilUtcMidnight always >= 1',
+    B.secsUntilUtcMidnight(Date.UTC(2026, 8, 26, 23, 59, 59, 999)) >= 1);
+
+  // claim info: fresh player
+  var f = B.dailyClaimInfo(null, 0, t0);
+  check('fresh player claimable day 1 streak 1',
+    f.claimable === true && f.streak === 1 && f.day === 1 && f.reward.coins === 1000);
+  // already claimed today
+  var c = B.dailyClaimInfo('2026-09-26', 3, t0);
+  check('same-day claim rejected', c.claimable === false && c.streak === 3 &&
+    c.nextClaimInSec > 0 && c.nextClaimInSec <= 86400);
+  // yesterday -> streak+1
+  var y = B.dailyClaimInfo('2026-09-25', 3, t0);
+  check('yesterday increments streak', y.claimable === true && y.streak === 4 && y.day === 4);
+  // gap -> reset
+  var g = B.dailyClaimInfo('2026-09-20', 5, t0);
+  check('gap resets streak to 1', g.claimable === true && g.streak === 1 && g.day === 1);
+  // day 7 -> cycle restarts at streak 8
+  var w = B.dailyClaimInfo('2026-09-25', 7, t0);
+  check('post-day-7 restarts cycle', w.claimable === true && w.streak === 8 && w.day === 1);
+  // garbage last claim -> treated as fresh
+  var gb = B.dailyClaimInfo('garbage', 9, t0);
+  check('garbage lastDailyClaim treated as fresh', gb.claimable === true && gb.streak === 1);
+  // future date (clock skew) -> safe reset, still claimable
+  var fu = B.dailyClaimInfo('2026-09-27', 4, t0);
+  check('future lastDailyClaim resets safely', fu.claimable === true && fu.streak === 1);
+
+  // applyDailyClaim
+  var s = B.freshState();
+  var rw = SC.applyDailyClaim(s, 2, 2, '2026-09-26');
+  check('applyDailyClaim pays + sets fields',
+    rw.coins === 2000 && s.coins === 2000 && s.totalEarned === 2000 &&
+    s.lastDailyClaim === '2026-09-26' && s.dailyStreak === 2 && s.warpCores === 0);
+  var s7 = B.freshState();
+  SC.applyDailyClaim(s7, 7, 7, '2026-09-26');
+  check('applyDailyClaim day 7 grants core', s7.warpCores === 1 && s7.coins === 7000);
+
+  // validator: daily fields
+  const V = require('../src/validation.js');
+  var vs = B.freshState();
+  vs.lastDailyClaim = '2026-09-26'; vs.dailyStreak = 4;
+  check('validator accepts valid daily fields', V.validateProgress(null, vs, Date.now()) === null);
+  var vb = B.freshState(); vb.lastDailyClaim = 'yesterday';
+  check('validator rejects garbage lastDailyClaim',
+    typeof V.validateProgress(null, vb, Date.now()) === 'string');
+  var vb2 = B.freshState(); vb2.lastDailyClaim = '2026-02-30';
+  check('validator rejects impossible date',
+    typeof V.validateProgress(null, vb2, Date.now()) === 'string');
+  var vb3 = B.freshState(); vb3.dailyStreak = -1;
+  check('validator rejects negative dailyStreak',
+    typeof V.validateProgress(null, vb3, Date.now()) === 'string');
+  var vb4 = B.freshState(); vb4.dailyStreak = 2.5;
+  check('validator rejects fractional dailyStreak',
+    typeof V.validateProgress(null, vb4, Date.now()) === 'string');
+  var vo = B.freshState(); delete vo.lastDailyClaim; delete vo.dailyStreak;
+  check('validator accepts missing daily fields (back-compat)',
+    V.validateProgress(null, vo, Date.now()) === null);
+
+  // sanitize carries + clamps daily fields
+  var ss = SC.sanitize({ lastDailyClaim: '2026-09-26', dailyStreak: 3 });
+  check('sanitize keeps valid daily fields',
+    ss.lastDailyClaim === '2026-09-26' && ss.dailyStreak === 3);
+  var ss2 = SC.sanitize({ lastDailyClaim: 'bogus', dailyStreak: -5 });
+  check('sanitize resets bogus daily fields',
+    ss2.lastDailyClaim === null && ss2.dailyStreak === 0);
+  var ss3 = SC.sanitize({});
+  check('sanitize defaults daily fields when absent',
+    ss3.lastDailyClaim === null && ss3.dailyStreak === 0);
+
+  // warp preserves daily streak (loyalty survives prestige)
+  var ws = B.freshState();
+  ws.totalEarned = 2e6; ws.lastDailyClaim = '2026-09-26'; ws.dailyStreak = 5;
+  check('doWarp keeps daily streak', SC.doWarp(ws).ok === true &&
+    ws.dailyStreak === 5 && ws.lastDailyClaim === '2026-09-26');
+})();
+
 /* ---------------- 3. browser wiring level ---------------- */
 
 function makeClassList(seed) {
@@ -198,7 +307,11 @@ function makeEl(id, seedClasses) {
     setAttribute() {},
     querySelectorAll: () => [],
     getBoundingClientRect: () => ({ left: 0, top: 0, width: 390, height: 600 }),
-    _fire: (t, evt) => { (listeners[t] || []).forEach((fn) => fn(evt || {})); },
+    _fire: (t, evt) => {
+      (listeners[t] || []).forEach((fn) => {
+        calls(id + ' [' + t + ']', () => fn(evt || {}));
+      });
+    },
   };
   return el;
 }
@@ -258,12 +371,19 @@ function makeEl(id, seedClasses) {
   const dbg = () => sandbox.window.__starcircuit;
 
   // fire DOMContentLoaded -> init() -> boot() (fetch undefined -> auth screen)
-  (docListeners.DOMContentLoaded || []).forEach((fn) => fn());
+  (docListeners.DOMContentLoaded || []).forEach((fn) => calls('DOMContentLoaded', fn));
   check('boot shows auth screen', $('auth-screen').classList.contains('hidden') === false);
 
   // guest login
   $('guest-btn')._fire('click');
   check('guest session shows game screen', $('game-screen').classList.contains('hidden') === false);
+
+  // daily auto-modal opens at session start when a claim is waiting
+  check('daily auto-modal opens on session start',
+    $('modal').classList.contains('hidden') === false &&
+    $('modal-title').textContent.indexOf('Daily Reward') >= 0);
+  $('modal-cancel')._fire('click'); // dismiss without claiming
+  check('daily modal dismisses', $('modal').classList.contains('hidden'));
 
   const api = sandbox.StarCircuit;
   const st = () => dbg().getState();
@@ -281,7 +401,11 @@ function makeEl(id, seedClasses) {
   // drive ~120 frames: draw(), updateHUD(), floats, particles, twinkles
   const raf = sandbox.__raf;
   let t = 16;
-  for (let i = 0; i < 120; i++) { t += 16; raf(t); }
+  // drive n frames, recording (not throwing) rAF errors
+  function frames(n) {
+    for (let i = 0; i < n; i++) { t += 16; calls('rAF', () => raf(t)); }
+  }
+  frames(120);
   check('120 frames run clean', true);
   check('HUD updated', $('coins').textContent.length > 0 && $('cps').textContent.length > 0);
   check('boost button wired', $('btn-boost').textContent !== undefined);
@@ -292,7 +416,7 @@ function makeEl(id, seedClasses) {
   check('canvas tap triggers boost label', $('boost-label').textContent !== before);
 
   // switch color theme via the settings hook: resolved colors change live
-  dbg().setCosmetics('colorTheme', 'ocean');
+  calls('setCosmetics', () => dbg().setCosmetics('colorTheme', 'ocean'));
   check('theme switch applies',
     dbg().activeCosmetics().colorTheme === 'ocean' &&
     api.tierColorsFor(st())[0] === '#a5f3fc');
@@ -301,14 +425,14 @@ function makeEl(id, seedClasses) {
     $('theme-list').innerHTML.indexOf('selected') >= 0);
 
   // switch ship style: shapes re-prerender without errors
-  dbg().setCosmetics('shipStyle', 'darts');
+  calls('setCosmetics', () => dbg().setCosmetics('shipStyle', 'darts'));
   check('style switch applies', dbg().activeCosmetics().shipStyle === 'darts');
-  for (let i = 0; i < 60; i++) { t += 16; raf(t); }
+  frames(60);
   check('frames clean after cosmetics switch', true);
 
   // bogus ids are ignored, never crash or corrupt state
-  dbg().setCosmetics('colorTheme', 'hacker');
-  dbg().setCosmetics('shipStyle', 'nope');
+  calls('setCosmetics', () => dbg().setCosmetics('colorTheme', 'hacker'));
+  calls('setCosmetics', () => dbg().setCosmetics('shipStyle', 'nope'));
   check('bogus cosmetics ids rejected',
     dbg().activeCosmetics().colorTheme === 'ocean' &&
     dbg().activeCosmetics().shipStyle === 'darts');
@@ -321,7 +445,7 @@ function makeEl(id, seedClasses) {
     const seen = new Set();
     for (let tier = 0; tier < 8; tier++) {
       const rec = makeRecorder();
-      dbg().drawShipShape(rec, tier, 10, '#ffffff', style);
+      calls('drawShipShape', () => dbg().drawShipShape(rec, tier, 10, '#ffffff', style));
       const sig = style + ':' + tier + '=' + rec.calls.join('|');
       sigs[style + tier] = sig;
       if (seen.has(rec.calls.join('|'))) dupes++;
@@ -359,7 +483,7 @@ function makeEl(id, seedClasses) {
 
   // x2 + warp buttons
   $('btn-x2')._fire('click');
-  for (let i = 0; i < 20; i++) { t += 16; raf(t); } // let updateHUD tick
+  frames(20); // let updateHUD tick
   check('x2 button engages', $('x2-label').textContent.indexOf('ACTIVE') >= 0);
   $('btn-warp')._fire('click'); // insufficient -> toast, no modal
   check('warp button safe when locked', $('modal').classList.contains('hidden'));
@@ -379,12 +503,40 @@ function makeEl(id, seedClasses) {
     $('panel-settings').classList.contains('hidden'));
   tabBtns.forEach((b) => b._fire('click')); // full cycle, no crashes
 
+  // daily card: fresh guest state -> claimable, CLAIM button rendered
+  byName.goals._fire('click'); // switchTab('goals') -> refreshGoals -> refreshDaily
+  check('daily card renders claim button when claimable',
+    $('daily-card').innerHTML.indexOf('id="daily-claim"') >= 0 &&
+    $('daily-card').innerHTML.indexOf('ddot') >= 0);
+  check('daily card shows 7 dots',
+    ($('daily-card').innerHTML.match(/ddot/g) || []).length >= 7);
+  // guest claim through the real claim path (local only)
+  const coinsBefore = st().coins;
+  calls('claimDaily', () => dbg().claimDaily());
+  check('guest daily claim pays + sets streak',
+    st().coins === coinsBefore + 1000 && st().dailyStreak === 1 &&
+    typeof st().lastDailyClaim === 'string' && st().totalEarned >= 1000);
+  check('daily card shows countdown after claim',
+    $('daily-card').innerHTML.indexOf('daily-count') >= 0 &&
+    $('daily-card').innerHTML.indexOf('id="daily-claim"') < 0);
+  // second claim same day rejected locally
+  calls('claimDaily', () => dbg().claimDaily());
+  check('guest double-claim rejected', st().coins === coinsBefore + 1000 && st().dailyStreak === 1);
+  // guest save roundtrip carries daily fields
+  const draw = sandbox.localStorage.getItem('starcircuit_guest');
+  const dparsed = JSON.parse(draw);
+  check('guest save carries daily fields',
+    dparsed.dailyStreak === 1 && typeof dparsed.lastDailyClaim === 'string');
+  // countdown tick via updateHUD path (frames) — no crash, no setInterval needed
+  frames(80);
+  check('frames clean with claimed daily card', true);
+
   // modal open/close
   $('modal-ok')._fire('click');
   check('modal ok closes', $('modal').classList.contains('hidden'));
 
   // more frames after all the action (particles/shocks/floats decaying)
-  for (let i = 0; i < 60; i++) { t += 16; raf(t); }
+  frames(60);
   check('post-action frames clean', true);
 
   // guest persistence roundtrip carries cosmetics (whole state is stringified)
@@ -393,6 +545,10 @@ function makeEl(id, seedClasses) {
     JSON.stringify(st()).indexOf('"darts"') >= 0);
   const raw = sandbox.localStorage.getItem('starcircuit_guest');
   check('guest save persisted', !!raw && JSON.parse(raw).ships.length === st().ships.length);
+
+  // zero JS errors across the whole stub-browser run
+  if (jsErrors.length) console.error('  JS errors:\n  ' + jsErrors.join('\n  '));
+  check('zero JS errors in stub browser', jsErrors.length === 0);
 })();
 
 /* ---------------- 4. source hygiene ---------------- */
@@ -400,6 +556,9 @@ function makeEl(id, seedClasses) {
   const appSrc = fs.readFileSync(path.join(PUB, 'js', 'app.js'), 'utf8');
   const html = fs.readFileSync(path.join(PUB, 'index.html'), 'utf8');
   check('no board references remain in app.js', !/board/i.test(appSrc));
+  check('persist sends {state} save shape (not raw state)',
+    appSrc.indexOf('body: { state: state }') >= 0 &&
+    appSrc.indexOf('method: \'POST\', body: state }') < 0);
   check('no board tab in index.html',
     html.indexOf('data-tab="board"') < 0 && html.indexOf('panel-board') < 0 &&
     html.indexOf('board-list') < 0);
@@ -414,5 +573,147 @@ function makeEl(id, seedClasses) {
   check('all ' + ids.length + ' cacheDom ids exist in index.html', missing.length === 0);
 })();
 
-if (failures) { console.error('\nSMOKE FAILED:', failures, 'check(s)'); process.exit(1); }
-console.log('\nSMOKE PASSED: zero JS errors, buy/merge/tab/boost/settings flows work.');
+/* ---------------- 5. integration: real server daily claim flow ---------------- */
+const { spawn } = require('child_process');
+const ROOT = path.join(__dirname, '..');
+
+function verdict() {
+  if (failures) { console.error('\nSMOKE FAILED:', failures, 'check(s)'); process.exit(1); }
+  console.log('\nSMOKE PASSED: zero JS errors, buy/merge/tab/boost/settings/daily flows work.');
+}
+
+async function integration() {
+  const PORT = 32107;
+  const base = 'http://127.0.0.1:' + PORT;
+  const env = Object.assign({}, process.env);
+  delete env.DATABASE_URL; // force the in-memory pg-mem database
+  env.PORT = String(PORT);
+  env.SESSION_SECRET = 'smoke-test-secret';
+  env.NODE_ENV = 'test';
+  const srv = spawn('node', ['server.js'], { cwd: ROOT, env: env, stdio: 'pipe' });
+  let out = '';
+  srv.stdout.on('data', (d) => { out += d; });
+  srv.stderr.on('data', (d) => { out += d; });
+  const kill = () => { try { srv.kill('SIGTERM'); } catch (e) {} };
+
+  try {
+    // wait for health
+    let healthy = false;
+    for (let i = 0; i < 50 && !healthy; i++) {
+      try {
+        const r = await fetch(base + '/api/health');
+        healthy = r.ok;
+      } catch (e) { /* not up yet */ }
+      if (!healthy) await new Promise((r) => setTimeout(r, 200));
+    }
+    check('integration server boots', healthy);
+    if (!healthy) { console.error('  server output:', out.slice(0, 500)); kill(); return; }
+
+    let cookie = '';
+    async function call(method, p, body) {
+      const r = await fetch(base + p, {
+        method: method,
+        headers: Object.assign(
+          { 'Content-Type': 'application/json' },
+          cookie ? { Cookie: cookie } : {}
+        ),
+        body: body === undefined ? undefined : JSON.stringify(body),
+      });
+      const sc = r.headers.get('set-cookie');
+      if (sc) cookie = sc.split(';')[0];
+      let data = null;
+      try { data = await r.json(); } catch (e) {}
+      return { status: r.status, data: data };
+    }
+    async function register() {
+      cookie = '';
+      const u = 'dtest' + Math.floor(Math.random() * 1e9);
+      const r = await call('POST', '/api/auth/register',
+        { username: u, password: 'TestPass123!' });
+      return r.status === 200;
+    }
+
+    // first claim
+    check('integration register', await register());
+    const today = B.utcDayString(Date.now());
+    const c1 = await call('POST', '/api/daily/claim');
+    check('endpoint: first claim 200 with day-1 reward',
+      c1.status === 200 && c1.data && c1.data.ok === true &&
+      c1.data.streak === 1 && c1.data.day === 1 &&
+      c1.data.reward.coins === 1000 && c1.data.reward.cores === 0 &&
+      c1.data.date === today && c1.data.nextClaimIn > 0);
+    // second claim same day -> 409
+    const c2 = await call('POST', '/api/daily/claim');
+    check('endpoint: second claim same day 409',
+      c2.status === 409 && c2.data && typeof c2.data.nextClaimIn === 'number');
+    // save reflects the reward
+    const sv = await call('GET', '/api/save');
+    const st8 = sv.data && sv.data.state;
+    check('endpoint: save carries daily claim',
+      st8 && st8.coins >= 1000 && st8.totalEarned >= 1000 &&
+      st8.lastDailyClaim === today && st8.dailyStreak === 1);
+
+    // streak continuation: seed yesterday's claim, then claim
+    const y = B.shiftDayString(today, -1);
+    st8.lastDailyClaim = y; st8.dailyStreak = 5;
+    const seed = await call('POST', '/api/save', { state: st8 });
+    check('integration seed yesterday save accepted', seed.status === 200);
+    const c3 = await call('POST', '/api/daily/claim');
+    check('endpoint: streak continues after yesterday',
+      c3.status === 200 && c3.data.streak === 6 && c3.data.day === 6 &&
+      c3.data.reward.coins === 6000);
+    // client mirror autosave after claim must not 422
+    const sv2 = await call('GET', '/api/save');
+    const mirror = await call('POST', '/api/save', { state: sv2.data.state });
+    check('endpoint: post-claim autosave accepted (no 422)', mirror.status === 200);
+
+    // gap resets the streak
+    check('integration register #2', await register());
+    const sv3 = await call('GET', '/api/save');
+    const s3 = sv3.data.state;
+    s3.lastDailyClaim = B.shiftDayString(today, -3); s3.dailyStreak = 5;
+    await call('POST', '/api/save', { state: s3 });
+    const c4 = await call('POST', '/api/daily/claim');
+    check('endpoint: streak resets after a gap',
+      c4.status === 200 && c4.data.streak === 1 && c4.data.day === 1);
+
+    // garbage daily fields rejected by the save validator
+    const sv4 = await call('GET', '/api/save');
+    const s4 = sv4.data.state;
+    s4.lastDailyClaim = 'not-a-date';
+    const bad = await call('POST', '/api/save', { state: s4 });
+    check('endpoint: garbage lastDailyClaim rejected', bad.status === 422);
+
+    // day 7 grants the warp core
+    check('integration register #3', await register());
+    const sv5 = await call('GET', '/api/save');
+    const s5 = sv5.data.state;
+    s5.lastDailyClaim = y; s5.dailyStreak = 6;
+    await call('POST', '/api/save', { state: s5 });
+    const c7 = await call('POST', '/api/daily/claim');
+    check('endpoint: day 7 grants warp core',
+      c7.status === 200 && c7.data.day === 7 && c7.data.reward.cores === 1);
+    const sv6 = await call('GET', '/api/save');
+    check('endpoint: warp core persisted', sv6.data.state.warpCores === 1);
+
+    // concurrent double-claim: exactly one 200, one 409
+    check('integration register #4', await register());
+    const [r1, r2] = await Promise.all([
+      call('POST', '/api/daily/claim'),
+      call('POST', '/api/daily/claim'),
+    ]);
+    const codes = [r1.status, r2.status].sort().join(',');
+    check('endpoint: concurrent double-claim -> one 200 + one 409', codes === '200,409');
+  } catch (e) {
+    failures++;
+    console.error('integration crashed:', (e && e.message) || e);
+  } finally {
+    kill();
+  }
+}
+
+integration().then(verdict).catch((e) => {
+  failures++;
+  console.error('integration crashed:', (e && e.message) || e);
+  verdict();
+});

@@ -33,6 +33,20 @@ Session cookie (httpOnly), 30 days.
   server's anti-cheat validation rejects the save (monotonic totalEarned,
   gains bounded by theoretical max for elapsed time, warp rules).
   The client must keep its local state on 422 and keep playing.
+- The save shape also carries `lastDailyClaim` (`"YYYY-MM-DD"` UTC string or
+  null) and `dailyStreak` (integer) — set by the daily claim endpoint; the
+  validator accepts them as optional fields.
+
+## Daily reward (auth required)
+- `POST /api/daily/claim` -> `200 {ok:true, streak, day, reward:{coins, cores}, date, nextClaimIn}`
+  or `409 {error, nextClaimIn}` when today's reward was already claimed.
+- Server-authoritative on UTC calendar days. 7-day cycle: day N pays
+  `1000*N` coins, day 7 also grants 1 warp core. Claiming on the calendar
+  day after the last claim increments the streak; any gap resets it to 1.
+  After day 7 the cycle restarts. `nextClaimIn` is seconds until the next
+  UTC midnight. The reward is applied to the save server-side; the client
+  must mirror it locally before its next autosave.
+- Guests use the same rules locally (localStorage), no server involved.
 
 ## Leaderboard (public)
 - `GET /api/leaderboard` -> `200 {entries:[{username, totalEarned, warps}]}`,
