@@ -1810,6 +1810,17 @@
 
   // Browser only: boot once the DOM exists. Guarded so node require() stays pure.
   if (typeof document !== 'undefined' && typeof window !== 'undefined') {
+    // PWA: register the service worker. Best-effort; a failure must never
+    // break the game.
+    try {
+      if ('serviceWorker' in navigator) {
+        var scRegisterSW = function () {
+          navigator.serviceWorker.register('/sw.js').catch(function () {});
+        };
+        if (document.readyState === 'complete') scRegisterSW();
+        else window.addEventListener('load', scRegisterSW);
+      }
+    } catch (e) { /* service workers unsupported/blocked — game runs fine without */ }
     if (document.readyState === 'loading') {
       document.addEventListener('DOMContentLoaded', init);
     } else {
