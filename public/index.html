@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#05070f">
+<meta name="description" content="Star Circuit — an idle orbit merger. No ads, ever.">
 <title>Star Circuit — Idle Orbit Merger</title>
 <link rel="stylesheet" href="css/style.css">
 </head>
@@ -12,6 +13,9 @@
 <!-- ============ AUTH SCREEN ============ -->
 <div id="auth-screen">
   <div class="stars-bg" aria-hidden="true"></div>
+  <div class="orb orb-a" aria-hidden="true"></div>
+  <div class="orb orb-b" aria-hidden="true"></div>
+  <div class="orb orb-c" aria-hidden="true"></div>
   <div class="auth-card">
     <h1>STAR CIRCUIT</h1>
     <p class="tagline">An idle orbit merger. No ads, ever.</p>
@@ -54,8 +58,9 @@
   <main id="panel-game" class="panel">
     <div id="canvas-wrap"><canvas id="orbit"></canvas></div>
     <div id="boost-wrap">
+      <button id="btn-boost" type="button"><span class="t">⚡ TAP TO BOOST</span><span class="c">2x ship speed</span></button>
       <div id="boost-track"><div id="boost-fill"></div></div>
-      <div id="boost-label">Tap empty space for a speed boost</div>
+      <div id="boost-label">Tap BOOST or tap anywhere on the stars for a speed boost</div>
     </div>
     <div id="btn-row">
       <button class="gbtn" id="btn-ship" type="button"><span class="t">ADD SHIP</span><span class="c" id="cost-ship"></span></button>
@@ -86,10 +91,10 @@
   </section>
 
   <nav id="tabs">
-    <button class="tabbtn active" data-tab="game" type="button">Game</button>
-    <button class="tabbtn" data-tab="goals" type="button">Goals</button>
-    <button class="tabbtn" data-tab="board" type="button">Board</button>
-    <button class="tabbtn" data-tab="news" type="button">News</button>
+    <button class="tabbtn active" data-tab="game" type="button"><span class="tab-ico" aria-hidden="true">🎮</span><span>Game</span></button>
+    <button class="tabbtn" data-tab="goals" type="button"><span class="tab-ico" aria-hidden="true">🎯</span><span>Goals</span></button>
+    <button class="tabbtn" data-tab="board" type="button"><span class="tab-ico" aria-hidden="true">🏆</span><span>Board</span></button>
+    <button class="tabbtn" data-tab="news" type="button"><span class="tab-ico" aria-hidden="true">📰</span><span>News</span></button>
   </nav>
 
   <div id="modal" class="hidden">

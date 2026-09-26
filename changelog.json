@@ -1,1 +1,34 @@
-{"entries":[{"date":"2026-09-26","notes":["Launch! Ships orbit the circuit and earn coins every lap.","Merge pairs of ships into 8 tiers, from Spark to Eclipse.","Buy ships, unlock up to 4 orbit rings, upgrade the circuit.","Tap for Speed Boost and the x2 Speed toggle — cooldown-based, no ads. Ever.","10-goal chains with coin and warp-core rewards.","Offline earnings (8h cap) with a Welcome back popup.","Warp Reset prestige: +25% coins per warp core, forever.","Global leaderboard: total coins earned and warp resets."],"version":"1.0.0"}],"game":"star-circuit","version":"1.0.0"}
+{
+ "entries": [
+  {
+   "date": "2026-09-26",
+   "version": "1.1.0",
+   "notes": [
+    "Visual overhaul: glowing gradient ships with flickering engine flames and fading trails.",
+    "Animated starfield with twinkling stars, nebula clouds and a pulsing core.",
+    "Orbit rings are brighter with a distinct color per ring \u2014 easy to see and tap.",
+    "New big TAP TO BOOST button: tap it, or tap anywhere on the stars, for 2x speed.",
+    "Tap ripples show exactly where your boost taps land.",
+    "Merge celebrations: spark bursts, shockwaves and floating tier names.",
+    "Fresher UI: glassy panels, gradient titles, animated buttons, goal cards and tabs.",
+    "Same game underneath \u2014 no balance or gameplay changes."
+   ]
+  },
+  {
+   "date": "2026-09-26",
+   "notes": [
+    "Launch! Ships orbit the circuit and earn coins every lap.",
+    "Merge pairs of ships into 8 tiers, from Spark to Eclipse.",
+    "Buy ships, unlock up to 4 orbit rings, upgrade the circuit.",
+    "Tap for Speed Boost and the x2 Speed toggle \u2014 cooldown-based, no ads. Ever.",
+    "10-goal chains with coin and warp-core rewards.",
+    "Offline earnings (8h cap) with a Welcome back popup.",
+    "Warp Reset prestige: +25% coins per warp core, forever.",
+    "Global leaderboard: total coins earned and warp resets."
+   ],
+   "version": "1.0.0"
+  }
+ ],
+ "game": "star-circuit",
+ "version": "1.1.0"
+}

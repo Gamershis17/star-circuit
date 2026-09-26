@@ -127,22 +127,26 @@
 
   // Greedily merge all possible pairs, lowest tier first.
   // Max-tier (tier 7) pairs are skipped — they cannot merge.
-  // Returns {merges}.
+  // Returns {merges, at}: `at` lists where each new ship appeared
+  // (for visual effects only; merge behavior is unchanged).
   function autoMerge(state) {
-    var merges = 0, changed = true;
+    var merges = 0, changed = true, at = [];
     while (changed) {
       changed = false;
       for (var t = 0; t < B.TIERS - 1; t++) {
         for (;;) {
           var pair = findPair(state, t);
           if (pair.length < 2) break;
-          mergePair(state, pair[0], pair[1]);
-          merges++;
+          var r = mergePair(state, pair[0], pair[1]);
+          if (r.ok) {
+            merges++;
+            at.push({ tier: r.newTier, ring: r.ring, angle: r.angle });
+          }
           changed = true;
         }
       }
     }
-    return { merges: merges };
+    return { merges: merges, at: at };
   }
 
   /* ---------------- purchases ---------------- */
@@ -414,7 +418,7 @@
      'goal-fill', 'goal-text',
      'panel-game', 'panel-goals', 'panel-board', 'panel-news',
      'canvas-wrap', 'orbit',
-     'boost-fill', 'boost-label',
+     'boost-fill', 'boost-label', 'btn-boost',
      'btn-ship', 'btn-ring', 'btn-circuit', 'btn-merge', 'btn-x2', 'btn-warp',
      'cost-ship', 'cost-ring', 'cost-circuit', 'x2-label', 'x2-sub',
      'warp-label', 'warp-sub',
@@ -525,6 +529,8 @@
     rt = newRuntime();
     selected = -1;
     floats = [];
+    particles = [];
+    shocks = [];
 
     if (guest) {
       state = loadGuestState();
@@ -724,6 +730,34 @@
   /* ---------------- canvas ---------------- */
 
   var DPR = 1, CW = 0, CH = 0, CX = 0, CY = 0, MAXR = 0;
+  var ctx2d = null;            // cached 2d context of #orbit
+  var nebulaCv = null;         // prerendered nebula wash
+  var twinkleA = null, twinkleB = null; // prerendered twinkle layers (crossfaded)
+  var shipSprites = [];        // per-tier prerendered sprites {cv, half}
+  var particles = [];          // spark bursts {x,y,vx,vy,ttl,maxTtl,size,color}
+  var shocks = [];             // expanding merge shockwaves {x,y,ttl,maxTtl,color}
+  var MAX_PARTICLES = 140;
+  var MAX_SHOCKS = 8;
+  var lastLapFloatT = 0;
+
+  // getContext guarded so logic tests (node/jsdom without canvas) never throw.
+  function getCtx(cv) {
+    try { return cv.getContext('2d'); } catch (e) { return null; }
+  }
+
+  function hexA(hex, a) {
+    var r = parseInt(hex.slice(1, 3), 16),
+        g = parseInt(hex.slice(3, 5), 16),
+        b = parseInt(hex.slice(5, 7), 16);
+    return 'rgba(' + r + ',' + g + ',' + b + ',' + a + ')';
+  }
+
+  function shade(hex, f) {
+    var r = Math.round(parseInt(hex.slice(1, 3), 16) * f),
+        g = Math.round(parseInt(hex.slice(3, 5), 16) * f),
+        b = Math.round(parseInt(hex.slice(5, 7), 16) * f);
+    return 'rgb(' + r + ',' + g + ',' + b + ')';
+  }
 
   function resize() {
     var canvas = el.orbit;
@@ -737,26 +771,116 @@
     canvas.height = Math.round(h * DPR);
     CX = w / 2; CY = h / 2;
     MAXR = Math.max(40, Math.min(w, h) / 2 - 30);
+    ctx2d = getCtx(canvas);
     buildStarfield();
+    buildShipSprites();
+  }
+
+  // Offscreen layer canvas (CSS-pixel coordinate space), or null when
+  // no 2d context is available (headless test environments).
+  function makeLayer() {
+    var cv = document.createElement('canvas');
+    cv.width = Math.max(2, Math.round(CW * DPR));
+    cv.height = Math.max(2, Math.round(CH * DPR));
+    var c = getCtx(cv);
+    if (!c) return null;
+    c.scale(DPR, DPR);
+    return { cv: cv, c: c };
   }
 
   function buildStarfield() {
-    stars = document.createElement('canvas');
-    stars.width = Math.round(CW * DPR);
-    stars.height = Math.round(CH * DPR);
-    var c = stars.getContext('2d');
-    c.scale(DPR, DPR);
-    var n = Math.round((CW * CH) / 9000);
-    for (var i = 0; i < n; i++) {
+    // base star layer
+    var base = makeLayer();
+    if (base) {
+      var c = base.c;
+      var n = Math.round((CW * CH) / 9000);
+      for (var i = 0; i < n; i++) {
+        var x = Math.random() * CW, y = Math.random() * CH;
+        var r = Math.random() < 0.85 ? 1 : 1.8;
+        c.globalAlpha = 0.25 + Math.random() * 0.55;
+        c.fillStyle = Math.random() < 0.2 ? '#cfe6ff' : '#ffffff';
+        c.beginPath();
+        c.arc(x, y, r, 0, TAU);
+        c.fill();
+      }
+      c.globalAlpha = 1;
+      stars = base.cv;
+    } else { stars = null; }
+    // nebula wash: large, very soft color blobs (static, subtle)
+    var neb = makeLayer();
+    if (neb) {
+      var nc = neb.c;
+      var blobs = [
+        [0.20, 0.26, 0.34, '109,72,222'],
+        [0.80, 0.60, 0.38, '46,110,230'],
+        [0.55, 0.88, 0.30, '24,170,190'],
+        [0.85, 0.12, 0.26, '220,90,160']
+      ];
+      for (var b = 0; b < blobs.length; b++) {
+        var bx = blobs[b][0] * CW, by = blobs[b][1] * CH,
+            br = blobs[b][2] * Math.max(CW, CH);
+        var g = nc.createRadialGradient(bx, by, 0, bx, by, br);
+        g.addColorStop(0, 'rgba(' + blobs[b][3] + ',0.10)');
+        g.addColorStop(1, 'rgba(' + blobs[b][3] + ',0)');
+        nc.fillStyle = g;
+        nc.fillRect(0, 0, CW, CH);
+      }
+      nebulaCv = neb.cv;
+    } else { nebulaCv = null; }
+    // two twinkle layers, crossfaded every frame for a shimmer effect
+    twinkleA = buildTwinkles(26, false);
+    twinkleB = buildTwinkles(18, true);
+  }
+
+  function buildTwinkles(count, big) {
+    var L = makeLayer();
+    if (!L) return null;
+    var c = L.c;
+    for (var i = 0; i < count; i++) {
       var x = Math.random() * CW, y = Math.random() * CH;
-      var r = Math.random() < 0.85 ? 1 : 1.8;
-      c.globalAlpha = 0.25 + Math.random() * 0.55;
-      c.fillStyle = Math.random() < 0.2 ? '#cfe6ff' : '#ffffff';
-      c.beginPath();
-      c.arc(x, y, r, 0, TAU);
-      c.fill();
+      var r = big ? 1.7 + Math.random() * 1.2 : 1 + Math.random() * 0.9;
+      c.globalAlpha = 0.45 + Math.random() * 0.5;
+      c.fillStyle = '#ffffff';
+      c.fillRect(x - r * 3, y - 0.6, r * 6, 1.2); // horizontal flare
+      c.fillRect(x - 0.6, y - r * 3, 1.2, r * 6); // vertical flare
+      c.beginPath(); c.arc(x, y, r * 0.85, 0, TAU); c.fill();
     }
     c.globalAlpha = 1;
+    return L.cv;
+  }
+
+  // Prerender each tier's ship (glow + gradient hull) once per resize so the
+  // frame loop is just drawImage calls — no per-frame gradients.
+  function buildShipSprites() {
+    shipSprites = [];
+    var s = shipSize();
+    for (var t = 0; t < B.TIERS; t++) {
+      var half = s * 3;
+      var cv = document.createElement('canvas');
+      cv.width = cv.height = Math.max(4, Math.ceil(half * 2 * DPR));
+      var c = getCtx(cv);
+      if (!c) { shipSprites.push(null); continue; }
+      c.scale(DPR, DPR);
+      c.translate(half, half);
+      var col = B.TIER_COLORS[t];
+      // soft outer glow
+      var g = c.createRadialGradient(0, 0, 0, 0, 0, half);
+      g.addColorStop(0, hexA(col, 0.5));
+      g.addColorStop(0.4, hexA(col, 0.16));
+      g.addColorStop(1, hexA(col, 0));
+      c.fillStyle = g;
+      c.fillRect(-half, -half, half * 2, half * 2);
+      // hull: white-hot core fading to tier color with a dark rim
+      var bg = c.createRadialGradient(-s * 0.3, -s * 0.3, s * 0.1, 0, 0, s * 1.25);
+      bg.addColorStop(0, '#ffffff');
+      bg.addColorStop(0.38, col);
+      bg.addColorStop(1, shade(col, 0.42));
+      drawShipShape(c, t, s, bg);
+      // cockpit glint
+      c.fillStyle = 'rgba(255,255,255,0.9)';
+      c.beginPath(); c.arc(s * 0.28, 0, Math.max(1, s * 0.16), 0, TAU); c.fill();
+      shipSprites.push({ cv: cv, half: half });
+    }
   }
 
   function ringRadius(i) { return MAXR * (i + 1) / MAX_RINGS; }
@@ -768,11 +892,10 @@
 
   function shipSize() { return Math.max(9, Math.min(15, MAXR / 16)); }
 
-  // Distinct canvas-drawn art per tier. Ships point along their velocity.
-  function drawShipShape(c, tier, s, color) {
-    c.fillStyle = color;
-    c.strokeStyle = color;
-    c.lineWidth = 1.6;
+  // Distinct canvas-drawn art per tier. Ships point along +x (velocity).
+  // `fill` may be a color string or a CanvasGradient.
+  function drawShipShape(c, tier, s, fill) {
+    c.fillStyle = fill;
     c.beginPath();
     var i, a;
     if (tier === 0) {           // Spark: triangle
@@ -807,6 +930,10 @@
     }
     c.closePath();
     c.fill();
+    // crisp rim light
+    c.strokeStyle = 'rgba(255,255,255,0.35)';
+    c.lineWidth = 1;
+    c.stroke();
     if (tier === 5 || tier === 7) {
       c.strokeStyle = 'rgba(255,255,255,0.85)';
       c.lineWidth = 1.4;
@@ -816,90 +943,172 @@
     }
   }
 
-  function draw() {
-    var canvas = el.orbit;
-    var c = canvas.getContext('2d');
+  function draw(t) {
+    var c = ctx2d;
+    if (!c || !state) return;
     c.setTransform(DPR, 0, 0, DPR, 0, 0);
     c.clearRect(0, 0, CW, CH);
+    if (nebulaCv) c.drawImage(nebulaCv, 0, 0, CW, CH);
     if (stars) c.drawImage(stars, 0, 0, CW, CH);
+    // twinkling star layers, crossfaded
+    var tw = 0.5 + 0.5 * Math.sin(t / 850);
+    if (twinkleA) { c.globalAlpha = 0.25 + 0.55 * tw; c.drawImage(twinkleA, 0, 0, CW, CH); }
+    if (twinkleB) { c.globalAlpha = 0.8 - 0.55 * tw; c.drawImage(twinkleB, 0, 0, CW, CH); }
+    c.globalAlpha = 1;
 
-    // Central core glow
-    var core = c.createRadialGradient(CX, CY, 0, CX, CY, 34);
-    core.addColorStop(0, 'rgba(125,211,252,0.5)');
+    // Central core: pulsing glow + bright dot
+    var pulse = 1 + 0.1 * Math.sin(t / 520);
+    var coreR = 34 * pulse;
+    var core = c.createRadialGradient(CX, CY, 0, CX, CY, coreR);
+    core.addColorStop(0, 'rgba(160,225,255,0.55)');
+    core.addColorStop(0.5, 'rgba(125,211,252,0.18)');
     core.addColorStop(1, 'rgba(125,211,252,0)');
     c.fillStyle = core;
-    c.beginPath(); c.arc(CX, CY, 34, 0, TAU); c.fill();
+    c.beginPath(); c.arc(CX, CY, coreR, 0, TAU); c.fill();
+    var dot = c.createRadialGradient(CX, CY, 0, CX, CY, 9 * pulse);
+    dot.addColorStop(0, 'rgba(255,255,255,0.95)');
+    dot.addColorStop(1, 'rgba(125,211,252,0)');
+    c.fillStyle = dot;
+    c.beginPath(); c.arc(CX, CY, 9 * pulse, 0, TAU); c.fill();
 
-    // Orbit rings
-    for (var ri = 0; ri < state.rings; ri++) {
-      c.strokeStyle = ri === 0 ? 'rgba(125,211,252,0.35)' : 'rgba(125,211,252,0.18)';
-      c.lineWidth = ri === 0 ? 2 : 1.5;
-      c.beginPath();
-      c.arc(CX, CY, ringRadius(ri), 0, TAU);
-      c.stroke();
+    // Orbit rings: bright, glowing, distinct color per ring.
+    // (Player feedback: the old faint lines were hard to see.)
+    var RING_COLORS = ['#7dd3fc', '#5eead4', '#c084fc', '#fbbf24'];
+    var ri, rr;
+    for (ri = 0; ri < MAX_RINGS; ri++) {
+      rr = ringRadius(ri);
+      if (ri < state.rings) {
+        var rc = RING_COLORS[ri];
+        // soft glow pass
+        c.strokeStyle = hexA(rc, 0.16);
+        c.lineWidth = 9;
+        c.beginPath(); c.arc(CX, CY, rr, 0, TAU); c.stroke();
+        // bright core line
+        c.strokeStyle = hexA(rc, ri === 0 ? 0.75 : 0.6);
+        c.lineWidth = ri === 0 ? 2.5 : 2;
+        c.beginPath(); c.arc(CX, CY, rr, 0, TAU); c.stroke();
+        // hot center thread for definition
+        c.strokeStyle = 'rgba(255,255,255,0.28)';
+        c.lineWidth = 1;
+        c.beginPath(); c.arc(CX, CY, rr, 0, TAU); c.stroke();
+        if (ri === 0) {
+          // energy dashes travelling along the inner ring
+          c.strokeStyle = 'rgba(190,235,255,0.5)';
+          c.lineWidth = 2;
+          c.setLineDash([3, 26]);
+          c.lineDashOffset = -((t / 28) % 29);
+          c.beginPath(); c.arc(CX, CY, rr, 0, TAU); c.stroke();
+          c.setLineDash([]);
+        }
+      } else {
+        // locked: faint dashed hint of what's to come
+        c.strokeStyle = 'rgba(139,152,184,0.18)';
+        c.lineWidth = 1.5;
+        c.setLineDash([4, 9]);
+        c.beginPath(); c.arc(CX, CY, rr, 0, TAU); c.stroke();
+        c.setLineDash([]);
+      }
     }
 
     var s = shipSize();
 
-    // Trails (behind each ship along its orbit)
+    // Engine trails: gradient-faded arcs behind each ship
     for (var ti = 0; ti < state.ships.length; ti++) {
       var sh = state.ships[ti];
       var p = shipXY(sh);
       var col = B.TIER_COLORS[sh.tier];
       var trailLen = 0.35 + sh.tier * 0.14;
-      c.strokeStyle = col;
-      c.globalAlpha = 0.28;
-      c.lineWidth = 2.5;
+      var tx = CX + p.r * Math.cos(sh.angle - trailLen),
+          ty = CY + p.r * Math.sin(sh.angle - trailLen);
+      var tg = c.createLinearGradient(tx, ty, p.x, p.y);
+      tg.addColorStop(0, hexA(col, 0));
+      tg.addColorStop(1, hexA(col, 0.55));
+      c.strokeStyle = tg;
+      c.lineWidth = Math.max(2, s * 0.3);
+      c.lineCap = 'round';
       c.beginPath();
       c.arc(CX, CY, p.r, sh.angle - trailLen, sh.angle);
       c.stroke();
-      c.globalAlpha = 1;
     }
+    c.lineCap = 'butt';
 
-    // Ships
+    // Ships (prerendered sprites: glow + gradient hull)
     for (var si = 0; si < state.ships.length; si++) {
       var shp = state.ships[si];
       var pos = shipXY(shp);
       var color = B.TIER_COLORS[shp.tier];
       var heading = Math.atan2(Math.cos(shp.angle), -Math.sin(shp.angle));
+      var spr = shipSprites[shp.tier];
 
-      // engine glow
-      var glow = c.createRadialGradient(pos.x, pos.y, 0, pos.x, pos.y, s * 2.2);
-      glow.addColorStop(0, color);
-      glow.addColorStop(1, 'rgba(0,0,0,0)');
-      c.globalAlpha = 0.35;
-      c.fillStyle = glow;
-      c.beginPath(); c.arc(pos.x, pos.y, s * 2.2, 0, TAU); c.fill();
-      c.globalAlpha = 1;
-
+      // pulsing selection ring
+      if (si === selected) {
+        var pr = s * (1.9 + 0.14 * Math.sin(t / 170));
+        c.strokeStyle = 'rgba(125,211,252,0.4)';
+        c.lineWidth = 7;
+        c.beginPath(); c.arc(pos.x, pos.y, pr, 0, TAU); c.stroke();
+        c.strokeStyle = 'rgba(255,255,255,0.9)';
+        c.lineWidth = 2;
+        c.beginPath(); c.arc(pos.x, pos.y, pr, 0, TAU); c.stroke();
+      }
       // tier-7 halo
       if (shp.tier === B.TIERS - 1) {
-        c.strokeStyle = 'rgba(226,232,240,0.7)';
+        c.strokeStyle = 'rgba(226,232,240,0.55)';
         c.lineWidth = 2;
         c.beginPath(); c.arc(pos.x, pos.y, s * 1.7, 0, TAU); c.stroke();
-      }
-
-      // selection highlight
-      if (si === selected) {
-        c.strokeStyle = '#ffffff';
-        c.lineWidth = 2;
-        c.beginPath(); c.arc(pos.x, pos.y, s * 1.9, 0, TAU); c.stroke();
       }
 
       c.save();
       c.translate(pos.x, pos.y);
       c.rotate(heading);
-      drawShipShape(c, shp.tier, s, color);
+      // flickering engine flame (behind the hull)
+      var fl = s * (0.8 + Math.random() * 0.8);
+      var fg = c.createLinearGradient(-s * 0.7, 0, -s * 0.7 - fl, 0);
+      fg.addColorStop(0, 'rgba(255,255,255,0.85)');
+      fg.addColorStop(0.4, hexA(color, 0.6));
+      fg.addColorStop(1, hexA(color, 0));
+      c.fillStyle = fg;
+      c.beginPath();
+      c.moveTo(-s * 0.65, s * 0.3);
+      c.lineTo(-s * 0.65 - fl, 0);
+      c.lineTo(-s * 0.65, -s * 0.3);
+      c.closePath();
+      c.fill();
+      if (spr) c.drawImage(spr.cv, -spr.half, -spr.half, spr.half * 2, spr.half * 2);
+      else drawShipShape(c, shp.tier, s, color); // fallback if prerender unavailable
       c.restore();
     }
 
-    // Floating "+N" texts
+    // merge shockwaves
+    for (var qi = shocks.length - 1; qi >= 0; qi--) {
+      var q = shocks[qi];
+      var kq = 1 - q.ttl / q.maxTtl;
+      c.globalAlpha = 0.7 * (1 - kq);
+      c.strokeStyle = q.color;
+      c.lineWidth = 3 * (1 - kq) + 1;
+      c.beginPath(); c.arc(q.x, q.y, 10 + kq * 46, 0, TAU); c.stroke();
+      c.globalAlpha = 1;
+    }
+
+    // spark particles
+    for (var pi = 0; pi < particles.length; pi++) {
+      var pt = particles[pi];
+      c.globalAlpha = Math.max(0, pt.ttl / pt.maxTtl);
+      c.fillStyle = pt.color;
+      var psz = Math.max(0.6, pt.size * (pt.ttl / pt.maxTtl));
+      c.fillRect(pt.x - psz / 2, pt.y - psz / 2, psz, psz);
+    }
+    c.globalAlpha = 1;
+
+    // Floating texts: dark outline + bright fill for readability
     c.textAlign = 'center';
-    c.font = 'bold 13px system-ui, sans-serif';
+    c.font = '700 13px system-ui, sans-serif';
     for (var fi = floats.length - 1; fi >= 0; fi--) {
       var f = floats[fi];
       var k = f.ttl / f.maxTtl;
       c.globalAlpha = Math.min(1, k * 2);
+      c.lineWidth = 3;
+      c.strokeStyle = 'rgba(3,6,14,0.85)';
+      c.strokeText(f.text, f.x, f.y);
       c.fillStyle = f.color;
       c.fillText(f.text, f.x, f.y);
       c.globalAlpha = 1;
@@ -918,6 +1127,58 @@
       f.y -= 34 * dt;
       if (f.ttl <= 0) floats.splice(i, 1);
     }
+  }
+
+  /* ---------------- particles & merge FX (visual only) ---------------- */
+
+  function spawnBurst(x, y, color, n, speed) {
+    for (var i = 0; i < (n || 22); i++) {
+      if (particles.length >= MAX_PARTICLES) return;
+      var a = Math.random() * TAU;
+      var sp = (speed || 110) * (0.35 + Math.random() * 0.95);
+      var ttl = 0.55 + Math.random() * 0.55;
+      particles.push({ x: x, y: y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp,
+        ttl: ttl, maxTtl: ttl, size: 1.6 + Math.random() * 2.6, color: color });
+    }
+  }
+
+  function spawnShock(x, y, color) {
+    shocks.push({ x: x, y: y, ttl: 0.45, maxTtl: 0.45, color: color || '#ffffff' });
+    if (shocks.length > MAX_SHOCKS) shocks.splice(0, shocks.length - MAX_SHOCKS);
+  }
+
+  // quick ripple so the player sees a tap registered (boost taps, etc.)
+  function spawnTapRipple(x, y) {
+    spawnShock(x, y, '#a5e3ff');
+    spawnBurst(x, y, '#7dd3fc', 6, 60);
+  }
+
+  function updateParticles(dt) {
+    var i, p;
+    for (i = particles.length - 1; i >= 0; i--) {
+      p = particles[i];
+      p.ttl -= dt;
+      if (p.ttl <= 0) { particles.splice(i, 1); continue; }
+      p.x += p.vx * dt;
+      p.y += p.vy * dt;
+      var d = Math.max(0, 1 - 2.4 * dt);
+      p.vx *= d; p.vy *= d;
+    }
+    for (i = shocks.length - 1; i >= 0; i--) {
+      shocks[i].ttl -= dt;
+      if (shocks[i].ttl <= 0) shocks.splice(i, 1);
+    }
+  }
+
+  // Combined merge celebration: floating tier name + spark burst + shockwave.
+  function mergeFx(ring, angle, newTier) {
+    var x = CX + ringRadius(ring) * Math.cos(angle);
+    var y = CY + ringRadius(ring) * Math.sin(angle);
+    var col = B.TIER_COLORS[newTier];
+    spawnFloat(x, y, B.TIER_NAMES[newTier] + '!', col);
+    spawnBurst(x, y, col, 24, 130);
+    spawnBurst(x, y, '#ffffff', 8, 70);
+    spawnShock(x, y, col);
   }
 
   /* ---------------- input: select / merge / tap boost ---------------- */
@@ -943,13 +1204,14 @@
     if (!state) return;
     evt.preventDefault();
     var pt = canvasPos(evt);
+    // ANY tap anywhere on the canvas speeds the ships up (boost strength /
+    // duration unchanged), with a ripple where the tap landed so it registers
+    // visibly. Ship taps additionally keep their select/merge behavior below.
+    var boostLeft = tapBoost(rt);
+    el['boost-label'].textContent = 'Speed boost active: ' + Math.ceil(boostLeft) + 's (tap for more)';
+    spawnTapRipple(pt.x, pt.y);
     var hit = shipAt(pt.x, pt.y);
-    if (hit < 0) {
-      // empty space: tap speed boost (2x while active)
-      var left = tapBoost(rt);
-      el['boost-label'].textContent = 'Speed boost active: ' + Math.ceil(left) + 's (tap for more)';
-      return;
-    }
+    if (hit < 0) return; // empty space: boost only
     if (selected < 0 || selected >= state.ships.length) {
       selected = hit;
       return;
@@ -960,8 +1222,7 @@
       if (a.tier >= B.TIERS - 1) { showToast(B.TIER_NAMES[a.tier] + ' is max tier — cannot merge further.'); selected = -1; return; }
       var r = mergePair(state, selected, hit);
       if (r.ok) {
-        var p = { x: CX + ringRadius(r.ring) * Math.cos(r.angle), y: CY + ringRadius(r.ring) * Math.sin(r.angle) };
-        spawnFloat(p.x, p.y, B.TIER_NAMES[r.newTier] + '!', B.TIER_COLORS[r.newTier]);
+        mergeFx(r.ring, r.angle, r.newTier);
         refreshGoals();
         persistSoon();
       }
@@ -981,6 +1242,11 @@
   }
 
   function bindButtons() {
+    el['btn-boost'].addEventListener('click', function () {
+      // same boost as tapping the canvas — big thumb-friendly trigger
+      var left = tapBoost(rt);
+      el['boost-label'].textContent = 'Speed boost active: ' + Math.ceil(left) + 's (tap for more)';
+    });
     el['btn-ship'].addEventListener('click', function () {
       var r = buyShip(state);
       if (r.ok) { showToast('Ship launched on ring ' + (r.ring + 1)); refreshGoals(); persistSoon(); }
@@ -1004,6 +1270,8 @@
       selected = -1;
       if (r.merges === 0) { showToast('No mergeable pairs right now.'); return; }
       showToast('Auto-merge: ' + r.merges + ' merge' + (r.merges > 1 ? 's' : ''));
+      var at = r.at || [];
+      for (var i = 0; i < at.length && i < 6; i++) mergeFx(at[i].ring, at[i].angle, at[i].tier);
       refreshGoals();
       persistSoon();
     });
@@ -1130,20 +1398,22 @@
     var laps = advanceShips(state, dt);
     if (laps.length) {
       awardLaps(state, laps, m);
-      // one float per lap, at the ship's current position
+      // floating "+N" per lap, throttled so busy fleets don't spam
+      var wm = B.warpMult(state.warpCores || 0);
       for (var i = 0; i < laps.length; i++) {
+        if (t - lastLapFloatT < 110 && floats.length >= 6) break;
+        lastLapFloatT = t;
         var lap = laps[i];
         var r = ringRadius(lap.ring);
-        // lap completed at angle ~0; approximate with a mid-ring point is fine,
-        // but we can place it near the rightmost point of the ring:
         spawnFloat(CX + r * 0.7, CY - r * 0.7,
-          '+' + fmt(Math.floor(B.lapValue(lap.tier, state.circuitLevel, B.warpMult(state.warpCores || 0)) * m)),
+          '+' + fmt(Math.floor(B.lapValue(lap.tier, state.circuitLevel, wm) * m)),
           B.TIER_COLORS[lap.tier]);
       }
       if (floats.length > 40) floats.splice(0, floats.length - 40);
     }
     updateFloats(dt);
-    draw();
+    updateParticles(dt);
+    draw(t);
     if (t - lastHud > 200) { lastHud = t; updateHUD(); }
     if (t - lastSave > SAVE_EVERY_MS) { lastSave = t; persist(); }
   }
