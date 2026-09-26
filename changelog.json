@@ -1,6 +1,15 @@
 {
   "entries": [
     {
+      "version": "1.5.0",
+      "date": "2026-09-26",
+      "notes": [
+        "Visual refresh: glowing gradient accents, richer panels and buttons",
+        "Animated orbit rings on the login screen, deeper starfield with vignette",
+        "Glowing active tab pill and shimmer claim button \u2014 gameplay unchanged"
+      ]
+    },
+    {
       "version": "1.4.0",
       "date": "2026-09-26",
       "notes": [
@@ -62,5 +71,5 @@
     }
   ],
   "game": "star-circuit",
-  "version": "1.4.0"
+  "version": "1.5.0"
 }

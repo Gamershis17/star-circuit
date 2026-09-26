@@ -1009,25 +1009,35 @@
       c.globalAlpha = 1;
       stars = base.cv;
     } else { stars = null; }
-    // nebula wash: large, very soft color blobs (static, subtle)
+    // nebula wash: large, very soft color blobs (static, subtle).
+    // Prerendered once per resize, so extra blobs cost nothing per frame.
     var neb = makeLayer();
     if (neb) {
       var nc = neb.c;
       var blobs = [
-        [0.20, 0.26, 0.34, '109,72,222'],
-        [0.80, 0.60, 0.38, '46,110,230'],
-        [0.55, 0.88, 0.30, '24,170,190'],
-        [0.85, 0.12, 0.26, '220,90,160']
+        [0.20, 0.26, 0.36, '109,72,222'],
+        [0.80, 0.60, 0.40, '46,110,230'],
+        [0.55, 0.88, 0.32, '24,170,190'],
+        [0.85, 0.12, 0.28, '220,90,160'],
+        [0.38, 0.52, 0.30, '192,132,252'],
+        [0.66, 0.30, 0.24, '251,191,36']
       ];
       for (var b = 0; b < blobs.length; b++) {
         var bx = blobs[b][0] * CW, by = blobs[b][1] * CH,
             br = blobs[b][2] * Math.max(CW, CH);
         var g = nc.createRadialGradient(bx, by, 0, bx, by, br);
-        g.addColorStop(0, 'rgba(' + blobs[b][3] + ',0.10)');
+        g.addColorStop(0, 'rgba(' + blobs[b][3] + ',0.12)');
         g.addColorStop(1, 'rgba(' + blobs[b][3] + ',0)');
         nc.fillStyle = g;
         nc.fillRect(0, 0, CW, CH);
       }
+      // soft vignette to pull focus toward the circuit center
+      var vg = nc.createRadialGradient(CW / 2, CH / 2, Math.min(CW, CH) * 0.32,
+                                       CW / 2, CH / 2, Math.max(CW, CH) * 0.72);
+      vg.addColorStop(0, 'rgba(0,0,0,0)');
+      vg.addColorStop(1, 'rgba(2,4,10,0.5)');
+      nc.fillStyle = vg;
+      nc.fillRect(0, 0, CW, CH);
       nebulaCv = neb.cv;
     } else { nebulaCv = null; }
     // two twinkle layers, crossfaded every frame for a shimmer effect
@@ -1294,6 +1304,21 @@
     dot.addColorStop(1, 'rgba(125,211,252,0)');
     c.fillStyle = dot;
     c.beginPath(); c.arc(CX, CY, 9 * pulse, 0, TAU); c.fill();
+
+    // twin rotating energy rings around the core (visual only: 2 cheap strokes)
+    var er1 = 46 * pulse;
+    c.strokeStyle = 'rgba(125,211,252,0.35)';
+    c.lineWidth = 1.5;
+    c.setLineDash([2, 7]);
+    c.lineDashOffset = -((t / 40) % 9);
+    c.beginPath(); c.arc(CX, CY, er1, 0, TAU); c.stroke();
+    var er2 = 58 * pulse;
+    c.strokeStyle = 'rgba(192,132,252,0.20)';
+    c.lineWidth = 1;
+    c.setLineDash([1, 11]);
+    c.lineDashOffset = (t / 55) % 12;
+    c.beginPath(); c.arc(CX, CY, er2, 0, TAU); c.stroke();
+    c.setLineDash([]);
 
     // Orbit rings: bright, glowing, distinct color per ring.
     // (Player feedback: the old faint lines were hard to see.)
