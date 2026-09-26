@@ -1,0 +1,33 @@
+# Render Blueprint for Star Circuit
+# Deploy via Render dashboard: New → Blueprint → point it at this repo.
+services:
+  - type: web
+    name: star-circuit
+    runtime: docker # builds the Dockerfile in this folder
+    plan: free
+    healthCheckPath: /api/health
+    envVars:
+      - key: PORT
+        value: 3000
+      - key: NODE_ENV
+        value: production
+      - key: SESSION_SECRET
+        generateValue: true
+      - key: OWNER_USERNAME
+        value: ""
+        description: "Your login username. Register in-game first with this
+          name, then set it here to claim the owner role."
+      - key: DATABASE_URL
+        value: ""
+        description: "REQUIRED — PostgreSQL connection string. This is what keeps
+          accounts, saves and the leaderboard alive across restarts. Paste your
+          Neon connection string here (it starts with postgres://). SSL is
+          enabled automatically for non-localhost hosts."
+
+    # --- Persistence ---
+    # All accounts, saves, sessions and the leaderboard live in PostgreSQL via
+    # DATABASE_URL (above) — NOT on the local disk. That is what makes progress
+    # survive restarts, redeploys and sleep/wake cycles on the free plan.
+    #
+    # WARNING: Render's free-tier filesystem is EPHEMERAL. Do not store anything
+    # you need to keep on the local disk.
