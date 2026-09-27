@@ -386,6 +386,10 @@
     if (rc && typeof rc === 'object' && !Array.isArray(rc)) {
       if (B.getTheme(rc.colorTheme)) s.cosmetics.colorTheme = rc.colorTheme;
       if (B.getStyle(rc.shipStyle)) s.cosmetics.shipStyle = rc.shipStyle;
+      // boolean prefs (sound/music/motion) — accept only real booleans
+      if (rc.sfx === true || rc.sfx === false) s.cosmetics.sfx = rc.sfx;
+      if (rc.music === true || rc.music === false) s.cosmetics.music = rc.music;
+      if (rc.reduceMotion === true || rc.reduceMotion === false) s.cosmetics.reduceMotion = rc.reduceMotion;
     }
     if (Array.isArray(raw.ships)) {
       for (var i = 0; i < raw.ships.length && s.ships.length < s.rings * B.RING_CAPACITY; i++) {
@@ -503,7 +507,8 @@
      'btn-ship', 'btn-ring', 'btn-circuit', 'btn-merge', 'btn-x2', 'btn-warp',
      'cost-ship', 'cost-ring', 'cost-circuit', 'x2-label', 'x2-sub',
      'warp-label', 'warp-sub',
-     'goals-list', 'theme-list', 'style-list', 'news-list',
+     'goals-list', 'theme-list', 'style-list', 'audio-list', 'motion-list',
+     'danger-list', 'news-list',
      'daily-card',
      'modal', 'modal-title', 'modal-body', 'modal-ok', 'modal-cancel',
      'toast'
@@ -744,6 +749,7 @@
           var bits = [];
           if (r.reward.coins) bits.push('+' + fmt(r.reward.coins) + ' coins');
           if (r.reward.cores) bits.push('+' + r.reward.cores + ' warp core');
+          AudioFX.goal();
           showToast('Goal complete: ' + bits.join(', '));
           refreshGoals();
           persist();
@@ -800,6 +806,7 @@
       // Guest: same rules, local only.
       var rw = applyDailyClaim(state, info.streak, info.day, info.date);
       persistGuest();
+      AudioFX.daily();
       showToast('Daily reward: ' + dailyRewardText(rw));
       refreshDaily();
       return;
@@ -812,6 +819,7 @@
         // autosave, so the anti-cheat never sees earnings go backwards.
         applyDailyClaim(state, r.data.streak, r.data.day, r.data.date);
         var got = r.data.reward || { coins: 0, cores: 0 };
+        AudioFX.daily();
         showToast('Daily reward: ' + dailyRewardText(got));
         updateHUD();
         persistSoon();
@@ -842,6 +850,227 @@
   }
 
   /* ---------------- settings panel (custom colors + ships) ---------------- */
+
+  /* ---------------- procedural audio (WebAudio, zero audio files) ---------------- */
+
+  var AudioFX = (function () {
+    var ctx = null, sfxBus = null, musicBus = null, noiseBuf = null;
+    var lastCoinT = 0, lastBoostT = 0;
+    var musicTimer = 0, nextChordT = 0, nextPluckT = 0, chordIdx = 0;
+    // Slow generative progression: Am9 - Fmaj9 - Cmaj9 - Gadd9, low and soft.
+    var CHORDS = [
+      [110.00, 164.81, 246.94, 329.63],
+      [87.31, 130.81, 220.00, 329.63],
+      [130.81, 196.00, 246.94, 392.00],
+      [98.00, 146.83, 246.94, 293.66],
+    ];
+    var PENTA = [220.00, 246.94, 277.18, 329.63, 369.99, 440.00];
+
+    // Lazily create the context (first user gesture only) and resume it.
+    // Returns null when audio is unavailable — never throws.
+    function ac() {
+      try {
+        if (typeof window === 'undefined') return null;
+        var AC = window.AudioContext || window.webkitAudioContext;
+        if (!AC) return null;
+        if (!ctx) {
+          ctx = new AC();
+          var master = ctx.createGain();
+          master.gain.value = 0.9;
+          master.connect(ctx.destination);
+          sfxBus = ctx.createGain(); sfxBus.gain.value = 0.5; sfxBus.connect(master);
+          musicBus = ctx.createGain(); musicBus.gain.value = 0.0; musicBus.connect(master);
+          var len = ctx.sampleRate | 0;
+          noiseBuf = ctx.createBuffer(1, len, ctx.sampleRate);
+          var d = noiseBuf.getChannelData(0);
+          for (var i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
+        }
+        if (ctx.state === 'suspended') { try { ctx.resume(); } catch (e) {} }
+        return ctx;
+      } catch (e) { return null; }
+    }
+
+    function env(g, t, peak, dur) {
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(Math.max(0.0002, peak), t + 0.012);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    }
+
+    function tone(freq, dur, type, vol, slideTo, delay) {
+      var c = ac(); if (!c) return;
+      try {
+        var t = c.currentTime + (delay || 0);
+        var o = c.createOscillator(), g = c.createGain();
+        o.type = type || 'sine';
+        o.frequency.setValueAtTime(freq, t);
+        if (slideTo) o.frequency.exponentialRampToValueAtTime(Math.max(20, slideTo), t + dur);
+        env(g, t, vol || 0.2, dur);
+        o.connect(g); g.connect(sfxBus);
+        o.start(t); o.stop(t + dur + 0.05);
+      } catch (e) {}
+    }
+
+    function noiseS(dur, vol, fFrom, fTo, type, delay) {
+      var c = ac(); if (!c || !noiseBuf) return;
+      try {
+        var t = c.currentTime + (delay || 0);
+        var src = c.createBufferSource(); src.buffer = noiseBuf; src.loop = true;
+        var f = c.createBiquadFilter(); f.type = type || 'bandpass';
+        f.frequency.setValueAtTime(fFrom, t);
+        f.frequency.exponentialRampToValueAtTime(Math.max(40, fTo), t + dur);
+        f.Q.value = 1.2;
+        var g = c.createGain();
+        env(g, t, vol || 0.2, dur);
+        src.connect(f); f.connect(g); g.connect(sfxBus);
+        src.start(t); src.stop(t + dur + 0.05);
+      } catch (e) {}
+    }
+
+    function sfxOn() { try { return audioPrefs().sfx; } catch (e) { return true; } }
+
+    function click() { if (!sfxOn()) return; tone(720, 0.05, 'square', 0.10); }
+    function buy() { if (!sfxOn()) return; tone(520, 0.07, 'triangle', 0.16, 780); }
+    function coin() {
+      if (!sfxOn()) return;
+      var now = Date.now();
+      if (now - lastCoinT < 110) return; // throttle: busy fleets, one blip max
+      lastCoinT = now;
+      tone(1318.5, 0.07, 'sine', 0.10);
+      tone(1760.0, 0.09, 'sine', 0.07, null, 0.045);
+    }
+    function merge(tier) {
+      if (!sfxOn()) return;
+      var f = 260 * Math.pow(2, Math.min(7, tier | 0) / 3.2); // pitch rises with tier
+      tone(f, 0.16, 'triangle', 0.22, f * 0.55);
+      noiseS(0.08, 0.10, 900, 2400, 'highpass');
+    }
+    function boost() {
+      if (!sfxOn()) return;
+      var now = Date.now();
+      if (now - lastBoostT < 1400) return; // one whoosh max per tap-spam
+      lastBoostT = now;
+      noiseS(0.45, 0.16, 350, 4200, 'bandpass');
+      tone(180, 0.4, 'sine', 0.10, 420);
+    }
+    function warp() {
+      if (!sfxOn()) return;
+      tone(160, 0.8, 'sawtooth', 0.14, 1400);
+      tone(1400, 0.9, 'sine', 0.08, 240, 0.15);
+      noiseS(0.9, 0.08, 800, 6000, 'highpass', 0.1);
+    }
+    function goal() {
+      if (!sfxOn()) return;
+      tone(659.25, 0.12, 'sine', 0.16);
+      tone(987.77, 0.2, 'sine', 0.16, null, 0.11);
+    }
+    function daily() {
+      if (!sfxOn()) return;
+      var seq = [523.25, 659.25, 783.99, 1046.5];
+      for (var i = 0; i < seq.length; i++) tone(seq[i], 0.22, 'triangle', 0.15, null, i * 0.11);
+    }
+
+    // ---- generative ambient music: scheduled pads + sparse plucks, seamless ----
+    function musicOn() { try { return audioPrefs().music; } catch (e) { return false; } }
+
+    function padChord(freqs, t, dur) {
+      for (var i = 0; i < freqs.length; i++) {
+        (function (fr, idx) {
+          try {
+            var o = ctx.createOscillator(), g = ctx.createGain(), f = ctx.createBiquadFilter();
+            o.type = idx % 2 ? 'triangle' : 'sine';
+            o.frequency.value = fr * (1 + (Math.random() - 0.5) * 0.002);
+            f.type = 'lowpass'; f.frequency.value = 750;
+            g.gain.setValueAtTime(0.0001, t);
+            g.gain.linearRampToValueAtTime(0.05, t + 2.4);
+            g.gain.setValueAtTime(0.05, t + dur - 2.4);
+            g.gain.linearRampToValueAtTime(0.0001, t + dur);
+            o.connect(f); f.connect(g); g.connect(musicBus);
+            o.start(t); o.stop(t + dur + 0.1);
+          } catch (e) {}
+        })(freqs[i], i);
+      }
+    }
+
+    function pluck(fr, t) {
+      try {
+        var o = ctx.createOscillator(), g = ctx.createGain();
+        o.type = 'sine'; o.frequency.value = fr;
+        g.gain.setValueAtTime(0.0001, t);
+        g.gain.exponentialRampToValueAtTime(0.06, t + 0.03);
+        g.gain.exponentialRampToValueAtTime(0.0001, t + 1.6);
+        o.connect(g); g.connect(musicBus);
+        o.start(t); o.stop(t + 1.8);
+      } catch (e) {}
+    }
+
+    function scheduleMusic() {
+      if (!ctx || !musicOn()) return;
+      try {
+        var ahead = ctx.currentTime + 1.2;
+        if (nextChordT < ctx.currentTime) nextChordT = ctx.currentTime + 0.1;
+        while (nextChordT < ahead) {
+          padChord(CHORDS[chordIdx % CHORDS.length], nextChordT, 9.5);
+          chordIdx++;
+          nextChordT += 8;
+        }
+        if (nextPluckT < ctx.currentTime) nextPluckT = ctx.currentTime + 2;
+        while (nextPluckT < ahead) {
+          if (Math.random() < 0.75) pluck(PENTA[(Math.random() * PENTA.length) | 0], nextPluckT);
+          nextPluckT += 3 + Math.random() * 5;
+        }
+      } catch (e) {}
+    }
+
+    function setMusic(on) {
+      var c = ac(); if (!c) return;
+      try {
+        var t = c.currentTime;
+        musicBus.gain.cancelScheduledValues(t);
+        musicBus.gain.setValueAtTime(musicBus.gain.value, t);
+        musicBus.gain.linearRampToValueAtTime(on ? 0.5 : 0.0, t + (on ? 2.5 : 0.8));
+        if (on && !musicTimer) {
+          nextChordT = 0; nextPluckT = 0;
+          musicTimer = setInterval(scheduleMusic, 500);
+        } else if (!on && musicTimer) {
+          clearInterval(musicTimer); musicTimer = 0;
+        }
+      } catch (e) {}
+    }
+
+    function unlock() { try { ac(); } catch (e) {} }
+
+    function suspend() { try { if (ctx && ctx.state === 'running') ctx.suspend(); } catch (e) {} }
+
+    return {
+      unlock: unlock, click: click, buy: buy, coin: coin, merge: merge,
+      boost: boost, warp: warp, goal: goal, daily: daily, setMusic: setMusic,
+      musicOn: musicOn, suspend: suspend,
+      state: function () { return { hasCtx: !!ctx, running: !!(ctx && ctx.state === 'running') }; },
+    };
+  })();
+
+  // Audio + motion prefs live on state.cosmetics (persisted like themes:
+  // account saves + guest localStorage; the server allowlist ignores extras).
+  function audioPrefs() {
+    var c = (state && state.cosmetics) || {};
+    return { sfx: c.sfx !== false, music: c.music === true, reduceMotion: c.reduceMotion === true };
+  }
+
+  function setAudioPref(key, val) {
+    if (!state || (key !== 'sfx' && key !== 'music' && key !== 'reduceMotion')) return;
+    val = !!val;
+    if (!state.cosmetics || typeof state.cosmetics !== 'object') {
+      state.cosmetics = {
+        colorTheme: B.DEFAULT_COSMETICS.colorTheme,
+        shipStyle: B.DEFAULT_COSMETICS.shipStyle,
+      };
+    }
+    if (state.cosmetics[key] === val) return;
+    state.cosmetics[key] = val;
+    if (key === 'music') AudioFX.setMusic(val);
+    refreshSettings();
+    persistSoon();
+  }
 
   function refreshSettings() {
     if (!state) return;
@@ -875,8 +1104,99 @@
     }
     el['style-list'].innerHTML = sh;
     el['style-list'].querySelectorAll('.style-row').forEach(function (b) {
-      b.addEventListener('click', function () { setCosmetics('shipStyle', b.getAttribute('data-style')); });
+      b.addEventListener('click', function () {
+        AudioFX.unlock(); AudioFX.click();
+        setCosmetics('shipStyle', b.getAttribute('data-style'));
+      });
     });
+
+    // ---- audio toggles (persisted per player + guest, take effect immediately)
+    var ap = audioPrefs();
+    var arows = [
+      { key: 'sfx', name: 'Sound FX', desc: 'Merges, coins, buttons & boosts' },
+      { key: 'music', name: 'Music', desc: 'Soft generative ambient loop' },
+    ];
+    el['audio-list'].innerHTML = prefRowsHtml(arows, ap);
+    bindPrefRows(el['audio-list'], true);
+
+    // ---- motion toggle
+    var mrows = [
+      { key: 'reduceMotion', name: 'Reduce motion', desc: 'Turns off particles & floating text' },
+    ];
+    el['motion-list'].innerHTML = prefRowsHtml(mrows, ap);
+    bindPrefRows(el['motion-list'], false);
+
+    // ---- danger zone: reset progress (double-confirm)
+    el['danger-list'].innerHTML =
+      '<button id="btn-reset-progress" class="danger-btn" type="button">Reset progress</button>' +
+      '<div class="danger-note">Wipes coins, ships, rings, goals &amp; warp cores. Your look &amp; sound settings are kept.</div>';
+    el['danger-list'].querySelectorAll('#btn-reset-progress').forEach(function (b) {
+      b.addEventListener('click', function () {
+        AudioFX.unlock(); AudioFX.click();
+        resetProgress();
+      });
+    });
+  }
+
+  function prefRowsHtml(rows, ap) {
+    var html = '', i;
+    for (i = 0; i < rows.length; i++) {
+      var on = !!ap[rows[i].key];
+      html += '<button class="audio-row" data-pref="' + rows[i].key + '" type="button">' +
+        '<span class="audio-text"><span class="audio-name">' + rows[i].name + '</span>' +
+        '<span class="audio-desc">' + rows[i].desc + '</span></span>' +
+        '<span class="toggle' + (on ? ' on' : '') + '" aria-hidden="true"><span class="knob"></span></span></button>';
+    }
+    return html;
+  }
+
+  function bindPrefRows(container, audibleConfirm) {
+    container.querySelectorAll('.audio-row').forEach(function (b) {
+      b.addEventListener('click', function () {
+        var k = b.getAttribute('data-pref');
+        var cur = !!audioPrefs()[k];
+        AudioFX.unlock();
+        setAudioPref(k, !cur);
+        if (audibleConfirm && k === 'sfx' && !cur) AudioFX.click(); // audible confirmation
+      });
+    });
+  }
+
+  function resetProgress() {
+    if (!state) return;
+    showModal(
+      'Reset progress?',
+      'This wipes <b>everything</b>: coins, ships, rings, circuit, goals and warp cores.<br><br>Your ship colors, ship style and sound settings are kept.',
+      'Reset', 'Cancel',
+      function () {
+        showModal(
+          'Last chance',
+          'There is no undo. Really wipe your run and start over?',
+          'Yes, wipe it', 'Cancel',
+          doResetProgress
+        );
+      }
+    );
+  }
+
+  function doResetProgress() {
+    try {
+      var keepCos = (state && state.cosmetics && typeof state.cosmetics === 'object')
+        ? state.cosmetics : undefined;
+      if (isGuest) { try { localStorage.removeItem(GUEST_KEY); } catch (e) {} }
+      state = B.freshState();
+      if (keepCos) state.cosmetics = keepCos;
+      rt = newRuntime(); selected = -1;
+      floats = []; particles = []; shocks = [];
+      buildShipSprites();
+      updateHUD(); refreshGoals(); refreshSettings(); refreshDaily();
+      switchTab('game');
+      persist();
+      try { AudioFX.click(); } catch (e) {}
+      showToast('Progress wiped — fresh run started.');
+    } catch (e) {
+      showToast('Reset failed — please try again.');
+    }
   }
 
   function setCosmetics(key, id) {
@@ -1515,7 +1835,11 @@
     }
   }
 
+  // Reduce-motion pref: skip decorative particles / floating text entirely.
+  function motionOK() { try { return !audioPrefs().reduceMotion; } catch (e) { return true; } }
+
   function spawnFloat(x, y, text, color) {
+    if (!motionOK()) return;
     floats.push({ x: x, y: y, ttl: 1.3, maxTtl: 1.3, text: text, color: color || '#fbbf24' });
     if (floats.length > 40) floats.splice(0, floats.length - 40);
   }
@@ -1532,6 +1856,7 @@
   /* ---------------- particles & merge FX (visual only) ---------------- */
 
   function spawnBurst(x, y, color, n, speed) {
+    if (!motionOK()) return;
     for (var i = 0; i < (n || 22); i++) {
       if (particles.length >= MAX_PARTICLES) return;
       var a = Math.random() * TAU;
@@ -1543,6 +1868,7 @@
   }
 
   function spawnShock(x, y, color) {
+    if (!motionOK()) return;
     shocks.push({ x: x, y: y, ttl: 0.45, maxTtl: 0.45, color: color || '#ffffff' });
     if (shocks.length > MAX_SHOCKS) shocks.splice(0, shocks.length - MAX_SHOCKS);
   }
@@ -1572,6 +1898,7 @@
 
   // Combined merge celebration: floating tier name + spark burst + shockwave.
   function mergeFx(ring, angle, newTier) {
+    AudioFX.merge(newTier);
     var p = angXY(angle, ringRadius(ring));
     var col = tierColor(newTier);
     spawnFloat(p.x, p.y, B.TIER_NAMES[newTier] + '!', col);
@@ -1609,6 +1936,7 @@
     var boostLeft = tapBoost(rt);
     el['boost-label'].textContent = 'Speed boost active: ' + Math.ceil(boostLeft) + 's (tap for more)';
     spawnTapRipple(pt.x, pt.y);
+    AudioFX.boost();
     var hit = shipAt(pt.x, pt.y);
     if (hit < 0) return; // empty space: boost only
     if (selected < 0 || selected >= state.ships.length) {
@@ -1645,29 +1973,30 @@
       // same boost as tapping the canvas — big thumb-friendly trigger
       var left = tapBoost(rt);
       el['boost-label'].textContent = 'Speed boost active: ' + Math.ceil(left) + 's (tap for more)';
+      AudioFX.boost();
     });
     el['btn-ship'].addEventListener('click', function () {
       var r = buyShip(state);
-      if (r.ok) { showToast('Ship launched on ring ' + (r.ring + 1)); refreshGoals(); persistSoon(); }
-      else if (r.reason === 'coins') showToast('Need ' + fmt(r.cost) + ' coins for a new ship.');
-      else showToast('All rings are full — merge ships to free space.');
+      if (r.ok) { AudioFX.buy(); showToast('Ship launched on ring ' + (r.ring + 1)); refreshGoals(); persistSoon(); }
+      else if (r.reason === 'coins') { AudioFX.click(); showToast('Need ' + fmt(r.cost) + ' coins for a new ship.'); }
+      else { AudioFX.click(); showToast('All rings are full — merge ships to free space.'); }
     });
     el['btn-ring'].addEventListener('click', function () {
       var r = buyRing(state);
-      if (r.ok) { showToast('Ring ' + r.rings + ' online'); refreshGoals(); persistSoon(); }
-      else if (r.reason === 'max') showToast('All ' + MAX_RINGS + ' rings already unlocked.');
-      else showToast('Need ' + fmt(r.cost) + ' coins to unlock ring ' + (state.rings + 1) + '.');
+      if (r.ok) { AudioFX.buy(); showToast('Ring ' + r.rings + ' online'); refreshGoals(); persistSoon(); }
+      else if (r.reason === 'max') { AudioFX.click(); showToast('All ' + MAX_RINGS + ' rings already unlocked.'); }
+      else { AudioFX.click(); showToast('Need ' + fmt(r.cost) + ' coins to unlock ring ' + (state.rings + 1) + '.'); }
     });
     el['btn-circuit'].addEventListener('click', function () {
       var r = buyCircuit(state);
-      if (r.ok) { showToast('Circuit upgraded to level ' + r.level); refreshGoals(); persistSoon(); }
-      else if (r.reason === 'max') showToast('Circuit at max level (' + B.CIRCUIT_MAX + ').');
-      else showToast('Need ' + fmt(r.cost) + ' coins to upgrade.');
+      if (r.ok) { AudioFX.buy(); showToast('Circuit upgraded to level ' + r.level); refreshGoals(); persistSoon(); }
+      else if (r.reason === 'max') { AudioFX.click(); showToast('Circuit at max level (' + B.CIRCUIT_MAX + ').'); }
+      else { AudioFX.click(); showToast('Need ' + fmt(r.cost) + ' coins to upgrade.'); }
     });
     el['btn-merge'].addEventListener('click', function () {
       var r = autoMerge(state);
       selected = -1;
-      if (r.merges === 0) { showToast('No mergeable pairs right now.'); return; }
+      if (r.merges === 0) { AudioFX.click(); showToast('No mergeable pairs right now.'); return; }
       showToast('Auto-merge: ' + r.merges + ' merge' + (r.merges > 1 ? 's' : ''));
       var at = r.at || [];
       for (var i = 0; i < at.length && i < 6; i++) mergeFx(at[i].ring, at[i].angle, at[i].tier);
@@ -1676,9 +2005,9 @@
     });
     el['btn-x2'].addEventListener('click', function () {
       var r = toggleX2(rt);
-      if (r.ok) showToast('x2 speed engaged for 60s');
-      else if (r.state === 'active') showToast('x2 already active');
-      else showToast('x2 recharging: ' + fmtDur(r.left) + ' left');
+      if (r.ok) { AudioFX.click(); showToast('x2 speed engaged for 60s'); }
+      else if (r.state === 'active') { AudioFX.click(); showToast('x2 already active'); }
+      else { AudioFX.click(); showToast('x2 recharging: ' + fmtDur(r.left) + ' left'); }
     });
     el['btn-warp'].addEventListener('click', function () {
       var info = warpInfo(state);
@@ -1699,6 +2028,7 @@
           var r = doWarp(state);
           if (r.ok) {
             selected = -1;
+            AudioFX.warp();
             showToast('Warp complete: +' + r.cores + ' cores, now x' + r.newMult.toFixed(2));
             refreshGoals();
             persist();
@@ -1810,6 +2140,7 @@
     var laps = advanceShips(state, dt);
     if (laps.length) {
       awardLaps(state, laps, m);
+      AudioFX.coin(); // soft blip on lap-gate crossings — throttled inside
       // floating "+N" per lap, throttled so busy fleets don't spam.
       // The text spawns exactly at the finish gate (top of the ring, where
       // the lap completed) along with a pulse flash at the crossing point.
@@ -1867,6 +2198,22 @@
     document.addEventListener('visibilitychange', function () {
       if (document.visibilityState === 'hidden') persistBeacon();
     });
+    // Audio: browsers block all sound before the first user gesture. Unlock the
+    // AudioContext on first tap/keypress, then honor the saved music preference.
+    // Suspend on tab hide so audio never plays in the background.
+    var audioUnlocked = false;
+    function unlockAudioOnce() {
+      if (audioUnlocked) return;
+      audioUnlocked = true;
+      AudioFX.unlock();
+      try { if (state && audioPrefs().music) AudioFX.setMusic(true); } catch (e) {}
+    }
+    document.addEventListener('pointerdown', unlockAudioOnce);
+    document.addEventListener('touchstart', unlockAudioOnce);
+    document.addEventListener('keydown', unlockAudioOnce);
+    document.addEventListener('visibilitychange', function () {
+      if (document.visibilityState === 'hidden') { try { AudioFX.suspend(); } catch (e) {} }
+    });
     boot();
   }
 
@@ -1879,6 +2226,11 @@
       activeCosmetics: activeCosmetics,
       drawShipShape: drawShipShape,
       claimDaily: claimDaily,
+      audioPrefs: audioPrefs,
+      setAudioPref: setAudioPref,
+      resetProgress: resetProgress,
+      audioState: function () { try { return AudioFX.state(); } catch (e) { return { hasCtx: false }; } },
+      unlockAudio: function () { try { AudioFX.unlock(); } catch (e) {} },
     };
   }
 

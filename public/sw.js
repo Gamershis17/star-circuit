@@ -4,7 +4,7 @@
  * - Network-first for navigations; offline falls back to the cached '/'.
  * - /api/* requests are NEVER intercepted: they pass through to the network untouched.
  */
-var CACHE = 'star-circuit-v2'; // bump on each release with static-asset changes (1.6.0: lap-line rework)
+var CACHE = 'star-circuit-v3'; // bump on each release with static-asset changes (1.7.0: procedural audio + settings)
 var PRECACHE = [
   '/',
   '/manifest.webmanifest',

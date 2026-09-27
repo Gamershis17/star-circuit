@@ -9,7 +9,7 @@
     "pg": "^8.23.0",
     "pg-mem": "^2.9.1"
   },
-  "description": "Star Circuit \u2014 orbit-ship idle game. No ads, ever.",
+  "description": "Star Circuit — orbit-ship idle game. No ads, ever.",
   "engines": {
     "node": ">=18"
   },
@@ -20,5 +20,5 @@
     "sim": "node sim/sim.js",
     "start": "node server.js"
   },
-  "version": "1.6.0"
+  "version": "1.7.0"
 }
