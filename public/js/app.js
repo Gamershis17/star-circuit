@@ -977,6 +977,7 @@
     ctx2d = getCtx(canvas);
     buildStarfield();
     buildShipSprites();
+    buildRingLayer();
   }
 
   // Offscreen layer canvas (CSS-pixel coordinate space), or null when
@@ -1097,11 +1098,60 @@
     }
   }
 
+  // Prerendered orbit-ring band layer (static glow rings + locked hints).
+  // Rebuilt on resize and when the unlocked ring count changes — never per
+  // frame — so the ring glow is perfectly stable and the hot path stays
+  // cheap. Ring colors are fixed (not theme-dependent), so theme switches
+  // never need a rebuild.
+  var RING_COLORS = ['#7dd3fc', '#5eead4', '#c084fc', '#fbbf24'];
+  var ringsCv = null, ringsBuiltFor = -2;
+  function buildRingLayer() {
+    ringsBuiltFor = state ? state.rings : -1;
+    if (!CW || !ctx2d) { ringsCv = null; return; }
+    var L = makeLayer();
+    if (!L) { ringsCv = null; return; }
+    var c = L.c, ri, rr;
+    for (ri = 0; ri < MAX_RINGS; ri++) {
+      rr = ringRadius(ri);
+      if (ri < ringsBuiltFor) {
+        var rc = RING_COLORS[ri];
+        c.strokeStyle = hexA(rc, 0.16);
+        c.lineWidth = 9;
+        c.beginPath(); c.arc(CX, CY, rr, 0, TAU); c.stroke();
+        c.strokeStyle = hexA(rc, ri === 0 ? 0.75 : 0.6);
+        c.lineWidth = ri === 0 ? 2.5 : 2;
+        c.beginPath(); c.arc(CX, CY, rr, 0, TAU); c.stroke();
+        c.strokeStyle = 'rgba(255,255,255,0.28)';
+        c.lineWidth = 1;
+        c.beginPath(); c.arc(CX, CY, rr, 0, TAU); c.stroke();
+      } else {
+        c.strokeStyle = 'rgba(139,152,184,0.18)';
+        c.lineWidth = 1.5;
+        c.setLineDash([4, 9]);
+        c.beginPath(); c.arc(CX, CY, rr, 0, TAU); c.stroke();
+        c.setLineDash([]);
+      }
+    }
+    ringsCv = L.cv;
+  }
+
   function ringRadius(i) { return MAXR * (i + 1) / MAX_RINGS; }
+
+  // Presentation only: logical angle 0 is where laps complete (the angle
+  // wrap in advanceShips), so the render layer rotates everything by -90deg
+  // to put that crossing at the TOP of each ring, where the finish gate is
+  // drawn. Pure visual rotation — game logic, sim, and economy are untouched.
+  var ANG_TOP = -Math.PI / 2;
+  function angXY(angle, r) {
+    var a = angle + ANG_TOP;
+    return { x: CX + r * Math.cos(a), y: CY + r * Math.sin(a) };
+  }
 
   function shipXY(sh) {
     var r = ringRadius(sh.ring);
-    return { x: CX + r * Math.cos(sh.angle), y: CY + r * Math.sin(sh.angle), r: r };
+    var p = angXY(sh.angle, r);
+    p.r = r;
+    return p;
   }
 
   function shipSize() { return Math.max(9, Math.min(15, MAXR / 16)); }
@@ -1320,43 +1370,45 @@
     c.beginPath(); c.arc(CX, CY, er2, 0, TAU); c.stroke();
     c.setLineDash([]);
 
-    // Orbit rings: bright, glowing, distinct color per ring.
-    // (Player feedback: the old faint lines were hard to see.)
-    var RING_COLORS = ['#7dd3fc', '#5eead4', '#c084fc', '#fbbf24'];
-    var ri, rr;
-    for (ri = 0; ri < MAX_RINGS; ri++) {
-      rr = ringRadius(ri);
-      if (ri < state.rings) {
-        var rc = RING_COLORS[ri];
-        // soft glow pass
-        c.strokeStyle = hexA(rc, 0.16);
-        c.lineWidth = 9;
-        c.beginPath(); c.arc(CX, CY, rr, 0, TAU); c.stroke();
-        // bright core line
-        c.strokeStyle = hexA(rc, ri === 0 ? 0.75 : 0.6);
-        c.lineWidth = ri === 0 ? 2.5 : 2;
-        c.beginPath(); c.arc(CX, CY, rr, 0, TAU); c.stroke();
-        // hot center thread for definition
-        c.strokeStyle = 'rgba(255,255,255,0.28)';
-        c.lineWidth = 1;
-        c.beginPath(); c.arc(CX, CY, rr, 0, TAU); c.stroke();
-        if (ri === 0) {
-          // energy dashes travelling along the inner ring
-          c.strokeStyle = 'rgba(190,235,255,0.5)';
-          c.lineWidth = 2;
-          c.setLineDash([3, 26]);
-          c.lineDashOffset = -((t / 28) % 29);
-          c.beginPath(); c.arc(CX, CY, rr, 0, TAU); c.stroke();
-          c.setLineDash([]);
-        }
-      } else {
-        // locked: faint dashed hint of what's to come
-        c.strokeStyle = 'rgba(139,152,184,0.18)';
-        c.lineWidth = 1.5;
-        c.setLineDash([4, 9]);
-        c.beginPath(); c.arc(CX, CY, rr, 0, TAU); c.stroke();
-        c.setLineDash([]);
-      }
+    // Orbit rings: prerendered static band layer (see buildRingLayer) —
+    // one drawImage instead of ~16 strokes per frame, and the glow never
+    // shimmers from per-frame redraw variance.
+    if (ringsCv) c.drawImage(ringsCv, 0, 0, CW, CH);
+
+    // Lap/finish gates: a glowing line across each unlocked ring at the top
+    // (logical angle 0 — exactly where laps complete and coins are awarded).
+    // White-hot core + soft halo reads on all six themes. The halo breathes
+    // gently (alpha only — no per-frame geometry churn, no allocations in
+    // the loop; the two alpha strings are built once per frame above it).
+    var gateBreath = 0.75 + 0.25 * Math.sin(t / 300);
+    var gateHaloA = (0.14 + 0.10 * gateBreath).toFixed(3);
+    var gateCapA = (0.55 + 0.25 * gateBreath).toFixed(3);
+    var gi, gr, gx, gy;
+    for (gi = 0; gi < state.rings; gi++) {
+      gr = ringRadius(gi);
+      gx = CX; gy = CY - gr; // gate center: top of the ring
+      c.strokeStyle = 'rgba(255,255,255,' + gateHaloA + ')';
+      c.lineWidth = 9;
+      c.beginPath(); c.moveTo(gx, gy - 11); c.lineTo(gx, gy + 11); c.stroke();
+      c.strokeStyle = 'rgba(255,255,255,0.95)';
+      c.lineWidth = 2.5;
+      c.beginPath(); c.moveTo(gx, gy - 11); c.lineTo(gx, gy + 11); c.stroke();
+      c.strokeStyle = 'rgba(255,255,255,' + gateCapA + ')';
+      c.lineWidth = 2;
+      c.beginPath();
+      c.moveTo(gx - 5, gy - 11); c.lineTo(gx + 5, gy - 11);
+      c.moveTo(gx - 5, gy + 11); c.lineTo(gx + 5, gy + 11);
+      c.stroke();
+    }
+    // travelling energy dashes on the inner ring (kept dynamic)
+    if (state.rings > 0) {
+      var rr0 = ringRadius(0);
+      c.strokeStyle = 'rgba(190,235,255,0.5)';
+      c.lineWidth = 2;
+      c.setLineDash([3, 26]);
+      c.lineDashOffset = -((t / 28) % 29);
+      c.beginPath(); c.arc(CX, CY, rr0, 0, TAU); c.stroke();
+      c.setLineDash([]);
     }
 
     var s = shipSize();
@@ -1367,16 +1419,15 @@
       var p = shipXY(sh);
       var col = tierColor(sh.tier);
       var trailLen = 0.35 + sh.tier * 0.14;
-      var tx = CX + p.r * Math.cos(sh.angle - trailLen),
-          ty = CY + p.r * Math.sin(sh.angle - trailLen);
-      var tg = c.createLinearGradient(tx, ty, p.x, p.y);
+      var tp = angXY(sh.angle - trailLen, p.r);
+      var tg = c.createLinearGradient(tp.x, tp.y, p.x, p.y);
       tg.addColorStop(0, hexA(col, 0));
       tg.addColorStop(1, hexA(col, 0.55));
       c.strokeStyle = tg;
       c.lineWidth = Math.max(2, s * 0.3);
       c.lineCap = 'round';
       c.beginPath();
-      c.arc(CX, CY, p.r, sh.angle - trailLen, sh.angle);
+      c.arc(CX, CY, p.r, sh.angle + ANG_TOP - trailLen, sh.angle + ANG_TOP);
       c.stroke();
     }
     c.lineCap = 'butt';
@@ -1386,7 +1437,7 @@
       var shp = state.ships[si];
       var pos = shipXY(shp);
       var color = tierColor(shp.tier);
-      var heading = Math.atan2(Math.cos(shp.angle), -Math.sin(shp.angle));
+      var heading = Math.atan2(Math.cos(shp.angle + ANG_TOP), -Math.sin(shp.angle + ANG_TOP));
       var spr = shipSprites[shp.tier];
 
       // pulsing selection ring
@@ -1521,13 +1572,12 @@
 
   // Combined merge celebration: floating tier name + spark burst + shockwave.
   function mergeFx(ring, angle, newTier) {
-    var x = CX + ringRadius(ring) * Math.cos(angle);
-    var y = CY + ringRadius(ring) * Math.sin(angle);
+    var p = angXY(angle, ringRadius(ring));
     var col = tierColor(newTier);
-    spawnFloat(x, y, B.TIER_NAMES[newTier] + '!', col);
-    spawnBurst(x, y, col, 24, 130);
-    spawnBurst(x, y, '#ffffff', 8, 70);
-    spawnShock(x, y, col);
+    spawnFloat(p.x, p.y, B.TIER_NAMES[newTier] + '!', col);
+    spawnBurst(p.x, p.y, col, 24, 130);
+    spawnBurst(p.x, p.y, '#ffffff', 8, 70);
+    spawnShock(p.x, p.y, col);
   }
 
   /* ---------------- input: select / merge / tap boost ---------------- */
@@ -1756,21 +1806,31 @@
     lastT = t;
     rtTick(rt, dt);
     var m = totalMult(rt);
+    if (state.rings !== ringsBuiltFor) buildRingLayer();
     var laps = advanceShips(state, dt);
     if (laps.length) {
       awardLaps(state, laps, m);
-      // floating "+N" per lap, throttled so busy fleets don't spam
+      // floating "+N" per lap, throttled so busy fleets don't spam.
+      // The text spawns exactly at the finish gate (top of the ring, where
+      // the lap completed) along with a pulse flash at the crossing point.
       var wm = B.warpMult(state.warpCores || 0);
       for (var i = 0; i < laps.length; i++) {
-        if (t - lastLapFloatT < 110 && floats.length >= 6) break;
-        lastLapFloatT = t;
         var lap = laps[i];
         var r = ringRadius(lap.ring);
-        spawnFloat(CX + r * 0.7, CY - r * 0.7,
+        var cp = angXY(0, r); // crossing point: the gate at the top
+        var lcol = tierColor(lap.tier);
+        // every crossing gets its pulse at the gate (bounded by MAX_SHOCKS),
+        // so the crossing moment is never silently dropped on busy frames
+        spawnShock(cp.x, cp.y, lcol);
+        // floating text + spark burst are throttled so busy fleets don't spam
+        // (bounded by the float cap and MAX_PARTICLES)
+        if (t - lastLapFloatT < 110 && floats.length >= 6) continue;
+        lastLapFloatT = t;
+        spawnFloat(cp.x, cp.y - 2,
           '+' + fmt(Math.floor(B.lapValue(lap.tier, state.circuitLevel, wm) * m)),
-          tierColor(lap.tier));
+          lcol);
+        spawnBurst(cp.x, cp.y, lcol, 5, 70);
       }
-      if (floats.length > 40) floats.splice(0, floats.length - 40);
     }
     updateFloats(dt);
     updateParticles(dt);
